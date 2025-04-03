@@ -1,19 +1,31 @@
 import numpy as np
+import pandas as pd
 import networkx as nx
 from sklearn.metrics.pairwise import cosine_similarity
-from nltk.tokenize import sent_tokenize
+from sklearn.feature_extraction.text import TfidfVectorizer
+from nltk.tokenize import sent_tokenize, word_tokenize
+import nltk
+
+# Ensure NLTK resources are available
+try:
+    nltk.data.find('tokenizers/punkt')
+except LookupError:
+    nltk.download('punkt')
 
 class TextRankSummarizer:
     """Class for text summarization using TextRank algorithm."""
     
-    def __init__(self, n_sentences=3):
+    def __init__(self, n_sentences=3, language='english'):
         """
         Initialize the summarizer.
         
         Parameters:
         n_sentences (int): Number of sentences to include in the summary
+        language (str): Language of the text
         """
         self.n_sentences = n_sentences
+        self.language = language
+        self.vectorizer = TfidfVectorizer(stop_words=language)
     
     def summarize(self, text, n_sentences=None):
         """
@@ -29,90 +41,164 @@ class TextRankSummarizer:
         if n_sentences is None:
             n_sentences = self.n_sentences
         
-        # Tokenize the text into sentences
-        sentences = sent_tokenize(text)
-        
-        # If there are fewer sentences than requested, return the whole text
-        if len(sentences) <= n_sentences:
-            return text
-        
-        # Create sentence vectors (simple word overlap for demonstration)
-        sentence_vectors = self._create_sentence_vectors(sentences)
-        
-        # Create similarity matrix
-        similarity_matrix = self._create_similarity_matrix(sentence_vectors)
-        
-        # Apply PageRank algorithm
-        scores = self._apply_pagerank(similarity_matrix)
-        
-        # Get the top sentences
-        top_sentence_indices = np.argsort(scores)[-n_sentences:]
-        top_sentence_indices = sorted(top_sentence_indices)
-        
-        # Create the summary
-        summary = ' '.join([sentences[i] for i in top_sentence_indices])
-        
-        return summary
+        try:
+            # Validate and preprocess text
+            if not text or not isinstance(text, str) or text.strip() == '':
+                return "No text to summarize."
+                
+            # Tokenize the text into sentences
+            sentences = sent_tokenize(text)
+            
+            # Remove very short sentences (likely noise)
+            sentences = [s for s in sentences if len(s.split()) > 3]
+            
+            # If there are fewer sentences than requested, return the whole text
+            if len(sentences) <= n_sentences:
+                return " ".join(sentences)
+            
+            # Create TF-IDF vectors for each sentence
+            tfidf_matrix = self.vectorizer.fit_transform(sentences)
+            
+            # Create similarity matrix
+            similarity_matrix = cosine_similarity(tfidf_matrix, tfidf_matrix)
+            
+            # Apply PageRank algorithm
+            nx_graph = nx.from_numpy_array(similarity_matrix)
+            scores = nx.pagerank(nx_graph)
+            
+            # Rank sentences by score
+            ranked_sentences = sorted(((scores[i], i, s) for i, s in enumerate(sentences)), reverse=True)
+            
+            # Get the top sentences by score
+            top_sentence_indices = sorted([i for _, i, _ in ranked_sentences[:n_sentences]])
+            
+            # Create the summary
+            summary = ' '.join([sentences[i] for i in top_sentence_indices])
+            
+            return summary
+            
+        except Exception as e:
+            print(f"Error in summarize: {e}")
+            # In case of error, return a portion of the original text if possible
+            if isinstance(text, str) and text:
+                sentences = sent_tokenize(text)
+                if sentences:
+                    return ' '.join(sentences[:min(n_sentences, len(sentences))])
+            return "Could not generate summary due to an error."
     
-    def _create_sentence_vectors(self, sentences):
+    def summarize_by_group(self, texts, group_labels, n_sentences_per_group=None):
         """
-        Create vectors for each sentence based on word overlap.
+        Generate summaries for groups of texts.
         
         Parameters:
-        sentences (list): List of sentences
+        texts (list): List of texts
+        group_labels (list): List of group labels corresponding to each text
+        n_sentences_per_group (int): Number of sentences per group summary
         
         Returns:
-        list: List of sentence vectors
+        dict: Dictionary mapping group labels to summaries
         """
-        # Simple implementation - in practice, you'd use more sophisticated embeddings
-        vectors = []
-        for sentence in sentences:
-            # Convert to lowercase and split into words
-            words = set(sentence.lower().split())
-            vectors.append(words)
+        if n_sentences_per_group is None:
+            n_sentences_per_group = self.n_sentences
         
-        return vectors
+        try:
+            # Group texts by label
+            grouped_texts = {}
+            for text, label in zip(texts, group_labels):
+                if label not in grouped_texts:
+                    grouped_texts[label] = []
+                grouped_texts[label].append(text)
+            
+            # Summarize each group
+            summaries = {}
+            for label, group_texts in grouped_texts.items():
+                # Combine texts in the group
+                combined_text = ' '.join(group_texts)
+                
+                # Generate summary
+                summary = self.summarize(combined_text, n_sentences_per_group)
+                summaries[label] = summary
+            
+            return summaries
+            
+        except Exception as e:
+            print(f"Error in summarize_by_group: {e}")
+            return {}
     
-    def _create_similarity_matrix(self, sentence_vectors):
+    def extract_keywords(self, text, n_keywords=10):
         """
-        Create a similarity matrix based on word overlap.
+        Extract key terms from the text.
         
         Parameters:
-        sentence_vectors (list): List of sentence vectors
+        text (str): Text to analyze
+        n_keywords (int): Number of keywords to extract
         
         Returns:
-        array: Similarity matrix
+        list: List of key terms
         """
-        n = len(sentence_vectors)
-        similarity_matrix = np.zeros((n, n))
-        
-        for i in range(n):
-            for j in range(n):
-                if i != j:
-                    # Calculate Jaccard similarity
-                    intersection = len(sentence_vectors[i].intersection(sentence_vectors[j]))
-                    union = len(sentence_vectors[i].union(sentence_vectors[j]))
-                    
-                    if union > 0:
-                        similarity_matrix[i][j] = intersection / union
-        
-        return similarity_matrix
+        try:
+            # Validate text
+            if not text or not isinstance(text, str) or text.strip() == '':
+                return []
+                
+            # Create TF-IDF matrix for the text
+            vectorizer = TfidfVectorizer(
+                stop_words=self.language,
+                max_features=1000,
+                ngram_range=(1, 2)
+            )
+            
+            # Fit TF-IDF on text
+            tfidf_matrix = vectorizer.fit_transform([text])
+            
+            # Get feature names
+            feature_names = vectorizer.get_feature_names_out()
+            
+            # Get TF-IDF scores
+            tfidf_scores = tfidf_matrix.toarray()[0]
+            
+            # Sort terms by score
+            sorted_indices = tfidf_scores.argsort()[::-1]
+            
+            # Get top terms
+            keywords = [feature_names[i] for i in sorted_indices[:n_keywords]]
+            
+            return keywords
+            
+        except Exception as e:
+            print(f"Error in extract_keywords: {e}")
+            return []
     
-    def _apply_pagerank(self, similarity_matrix):
+    def summarize_comments(self, comments, sentiment_labels=None, n_sentences=None):
         """
-        Apply PageRank algorithm to the similarity matrix.
+        Summarize YouTube comments, optionally grouped by sentiment.
         
         Parameters:
-        similarity_matrix (array): Similarity matrix
+        comments (list): List of comment texts
+        sentiment_labels (list): List of sentiment labels (optional)
+        n_sentences (int): Number of sentences in each summary
         
         Returns:
-        array: Sentence scores
+        dict: Summaries (either overall or by sentiment)
         """
-        # Create a graph from the similarity matrix
-        nx_graph = nx.from_numpy_array(similarity_matrix)
+        if n_sentences is None:
+            n_sentences = self.n_sentences
         
-        # Apply PageRank
-        scores = nx.pagerank(nx_graph)
-        
-        # Convert to array
-        return np.array(list(scores.values()))
+        try:
+            # Handle empty input
+            if not comments:
+                return {"overall": "No comments to summarize."}
+                
+            # If sentiment labels are provided, group by sentiment
+            if sentiment_labels and len(sentiment_labels) == len(comments):
+                return self.summarize_by_group(comments, sentiment_labels, n_sentences)
+            
+            # Otherwise, generate overall summary
+            combined_text = ' '.join(comments)
+            summary = self.summarize(combined_text, n_sentences)
+            
+            return {"overall": summary}
+            
+        except Exception as e:
+            print(f"Error in summarize_comments: {e}")
+            return {"overall": "Could not generate summary due to an error."}
