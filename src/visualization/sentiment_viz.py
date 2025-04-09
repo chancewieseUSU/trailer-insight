@@ -100,54 +100,71 @@ def create_sentiment_comparison(sentiment_data, movies=None, title="Sentiment Co
     try:
         # Reshape data for plotting if needed
         if isinstance(sentiment_data, pd.DataFrame):
+            # Convert dataframe to prepare for plotting
+            plot_data = sentiment_data.copy()
+            
             # Check if this is a grouped DataFrame with MultiIndex
-            if isinstance(sentiment_data.index, pd.MultiIndex):
-                plot_data = sentiment_data.reset_index()
-            elif sentiment_data.index.name:
-                # If data is in the format from get_sentiment_distribution with group_by
-                plot_data = sentiment_data.copy().reset_index()
+            if isinstance(plot_data.index, pd.MultiIndex):
+                # Reset the index to columns
+                plot_data = plot_data.reset_index()
                 
-                # Check if the first column needs renaming for consistency
-                if plot_data.columns[0].lower() == 'movie':
+                # Rename the index levels if they don't have explicit names
+                if plot_data.columns[0] == 'level_0' or plot_data.columns[0] == 0:
                     plot_data.rename(columns={plot_data.columns[0]: 'Movie'}, inplace=True)
-                elif plot_data.columns[0] not in ['Movie', 'movie']:
-                    plot_data.rename(columns={plot_data.columns[0]: 'Movie'}, inplace=True)
+                if plot_data.columns[1] == 'level_1' or plot_data.columns[1] == 1:
+                    plot_data.rename(columns={plot_data.columns[1]: 'Sentiment'}, inplace=True)
+                
+                # Convert from wide to long format
+                plot_data = pd.melt(
+                    plot_data, 
+                    id_vars='Movie', 
+                    value_vars=plot_data.columns[1:],
+                    var_name='Sentiment', 
+                    value_name='Count'
+                )
             else:
-                # Convert to long format
-                plot_data = pd.melt(sentiment_data.reset_index(), 
-                                id_vars='index', 
-                                value_vars=['positive', 'negative', 'neutral'],
-                                var_name='Sentiment', 
-                                value_name='Count')
-                plot_data.rename(columns={'index': 'Movie'}, inplace=True)
+                # Single index dataframe
+                if 'movie' in plot_data.index.name.lower() if plot_data.index.name else False:
+                    # Already in the right format, just reset index
+                    plot_data = plot_data.reset_index()
+                    plot_data.rename(columns={plot_data.columns[0]: 'Movie'}, inplace=True)
+                    
+                    # Melt to long format for plotting
+                    plot_data = pd.melt(
+                        plot_data, 
+                        id_vars='Movie', 
+                        value_vars=['positive', 'negative', 'neutral'] if all(col in plot_data.columns for col in ['positive', 'negative']) else plot_data.columns[1:],
+                        var_name='Sentiment', 
+                        value_name='Count'
+                    )
+                else:
+                    # This is a standard dataframe, hopefully already formatted correctly
+                    if 'Movie' not in plot_data.columns and 'movie' in plot_data.columns:
+                        plot_data.rename(columns={'movie': 'Movie'}, inplace=True)
+                    
+                    if 'Sentiment' not in plot_data.columns and 'sentiment' in plot_data.columns:
+                        plot_data.rename(columns={'sentiment': 'Sentiment'}, inplace=True)
+                    
+                    # If we still don't have Movie or Sentiment columns, try to infer them
+                    if 'Movie' not in plot_data.columns:
+                        # Use the first column as Movie
+                        plot_data.rename(columns={plot_data.columns[0]: 'Movie'}, inplace=True)
+                    
+                    if 'Sentiment' not in plot_data.columns and len(plot_data.columns) > 1:
+                        # Try to melt the remaining columns as sentiment categories
+                        id_cols = ['Movie']
+                        value_cols = [col for col in plot_data.columns if col not in id_cols]
+                        
+                        plot_data = pd.melt(
+                            plot_data,
+                            id_vars=id_cols,
+                            value_vars=value_cols,
+                            var_name='Sentiment',
+                            value_name='Count'
+                        )
         else:
             raise ValueError("sentiment_data must be a pandas DataFrame")
-        
-        # Ensure 'Movie' column exists (capital M for consistency)
-        if 'movie' in plot_data.columns and 'Movie' not in plot_data.columns:
-            plot_data.rename(columns={'movie': 'Movie'}, inplace=True)
             
-        # If we still don't have a 'Movie' column, try to find it
-        if 'Movie' not in plot_data.columns:
-            # Look for any column that might contain movie names
-            potential_cols = [col for col in plot_data.columns if plot_data[col].dtype == 'object']
-            if potential_cols:
-                plot_data.rename(columns={potential_cols[0]: 'Movie'}, inplace=True)
-            else:
-                raise ValueError("Could not identify a movie column in the data")
-                
-        # Ensure 'Sentiment' column exists
-        if 'Sentiment' not in plot_data.columns:
-            # Try to identify sentiment and count columns
-            numeric_cols = [col for col in plot_data.columns if col not in ['Movie']]
-            if len(numeric_cols) > 0:
-                # Create a dummy Sentiment column using column names
-                plot_data = pd.melt(plot_data, 
-                                   id_vars='Movie',
-                                   value_vars=numeric_cols,
-                                   var_name='Sentiment',
-                                   value_name='Count')
-        
         # Filter by selected movies if specified
         if movies:
             plot_data = plot_data[plot_data['Movie'].isin(movies)]
@@ -197,10 +214,10 @@ def create_sentiment_heatmap(sentiment_data, title="Sentiment Heatmap"):
         # Create normalized version of the data (percentages)
         normalized_data = sentiment_data.div(sentiment_data.sum(axis=1), axis=0) * 100
         
-        # Create two subplots: counts and percentages
-        fig = make_subplots(rows=2, cols=1, 
+        # Create two separate heatmaps side by side
+        fig = make_subplots(rows=1, cols=2, 
                            subplot_titles=["Sentiment Counts", "Sentiment Percentages (%)"],
-                           vertical_spacing=0.15)
+                           horizontal_spacing=0.15)
         
         # Add counts heatmap
         fig.add_trace(
@@ -217,6 +234,7 @@ def create_sentiment_heatmap(sentiment_data, title="Sentiment Heatmap"):
                 text=sentiment_data.values.astype(int),
                 texttemplate="%{text}",
                 textfont={"size":10},
+                colorbar=dict(title="Count", x=0.46)
             ),
             row=1, col=1
         )
@@ -236,12 +254,14 @@ def create_sentiment_heatmap(sentiment_data, title="Sentiment Heatmap"):
                 text=normalized_data.values,
                 texttemplate="%{text:.1f}%",
                 textfont={"size":10},
+                colorbar=dict(title="Percentage (%)")
             ),
-            row=2, col=1
+            row=1, col=2
         )
         
         fig.update_layout(
-            height=800,
+            height=500,
+            width=1000,
             title_text=title,
             template="plotly_white"
         )
