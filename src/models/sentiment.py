@@ -1,275 +1,254 @@
 # src/models/sentiment.py
 import pandas as pd
+import re
 import numpy as np
-import pickle
-import os
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.linear_model import LogisticRegression
-from sklearn.pipeline import Pipeline
-from sklearn.svm import LinearSVC
 from textblob import TextBlob
-from transformers import pipeline
+from collections import Counter
 
 class SentimentAnalyzer:
-    """Class for sentiment analysis of comments."""
+    """Improved class for sentiment analysis of movie trailer comments with context awareness."""
     
-    def __init__(self, method='textblob', model_path=None):
-        """
-        Initialize sentiment analyzer.
+    def __init__(self):
+        """Initialize sentiment analyzer using TextBlob with domain-specific adjustments."""
+        # Movie/gaming positive terms that might be misclassified
+        self.domain_positive_terms = [
+            'villain', 'evil', 'brutal', 'fight', 'battle', 'explosion', 'dark',
+            'intense', 'scary', 'kill', 'die', 'death', 'worst enemy', 'legendary',
+            'epic', 'insane', 'crazy', 'sick', 'favourite', 'favorite', 'hype',
+            'hyped', 'cant wait', "can't wait", 'finally', 'omg', 'exciting',
+            'peak', 'fire', 'go hard', 'hard', 'badass', 'savage', 'beast',
+            'awesome', 'cool', 'lit', 'amazing', 'dope', 'goat', 'greatest'
+        ]
         
-        Parameters:
-        method (str): Method to use for sentiment analysis.
-                     Options: 'textblob', 'custom', 'transformer'
-        model_path (str): Path to saved model (for 'custom' method)
-        """
-        self.method = method
-        self.model = None
-        self.transformer = None
+        # Context indicators that should neutralize negative words
+        self.context_modifiers = [
+            'scene', 'part', 'character', 'quote', 'quotes', 'moment', 'moments',
+            'reference', 'easter egg', 'callback', 'reference', 'throwback',
+            'trailer', 'teaser', 'preview', 'clip', 'ending', 'beginning'
+        ]
         
-        # Load custom model if method is 'custom' and path is provided
-        if method == 'custom' and model_path and os.path.exists(model_path):
-            try:
-                self.model = pickle.load(open(model_path, 'rb'))
-                print(f"Loaded model from {model_path}")
-            except Exception as e:
-                print(f"Error loading model: {e}")
-                self.method = 'textblob'  # Fallback to TextBlob
+        # Genuine negative sentiment indicators for movies
+        self.movie_negative_indicators = [
+            'disappointing', 'letdown', 'waste', 'terrible movie', 'awful movie',
+            'bad acting', 'poor effects', 'boring', 'lame', 'skip', 'not watching',
+            'wont watch', 'wont see', 'cash grab', 'money grab', 'sells out', 'sellout',
+            'ruin', 'ruined', 'disaster', 'flop', 'cash grab', 'awful', 'horrible',
+            'terrible', 'worst movie', 'garbage', 'trash', 'pathetic', 'embarrassing'
+        ]
         
-        # Initialize transformer model if method is 'transformer'
-        if method == 'transformer':
-            try:
-                self.transformer = pipeline("sentiment-analysis", 
-                                           model="nlptown/bert-base-multilingual-uncased-sentiment")
-                print("Loaded transformer model")
-            except Exception as e:
-                print(f"Error loading transformer model: {e}")
-                self.method = 'textblob'  # Fallback to TextBlob
+        # Excitement/anticipation expressions (often with "can't wait")
+        self.excitement_patterns = [
+            r"can'?t wait",
+            r"so excited",
+            r"(looking|excited) (forward to|for)",
+            r"(gonna|going to) (be|watch)",
+            r"hyped",
+            r"this looks (good|great|amazing)",
+            r"🔥+"  # Fire emojis often indicate excitement
+        ]
+        
+        # Slang positivity indicators
+        self.slang_positive = [
+            r"(\b|^)fire(\b|$)",
+            r"(\b|^)lit(\b|$)",
+            r"(\b|^)peak(\b|$)",
+            r"(\b|^)dope(\b|$)",
+            r"(\b|^)go(es|ing)? hard(\b|$)",
+            r"(\b|^)goat(\b|$)",
+            r"(\b|^)🔥+",
+            r"(\b|^)W(\b|$)",  # Internet slang for "win"
+            r"(\b|^)banger(\b|$)"
+        ]
+        
+        # Movie-specific frequent terms (will be populated during analysis)
+        self.movie_specific_terms = {}
+        
+    def _extract_frequent_terms(self, texts, movie_name=None, min_count=3):
+        """Extract frequently occurring terms that might be movie-specific."""
+        # Tokenize all texts
+        all_words = []
+        for text in texts:
+            if not isinstance(text, str):
+                continue
+                
+            # Extract words and short phrases
+            words = re.findall(r'\b\w+\b', text.lower())
+            all_words.extend(words)
+            
+            # Also look for quoted text
+            quotes = re.findall(r'"([^"]+)"', text)
+            for quote in quotes:
+                if 3 <= len(quote.split()) <= 5:  # Short quotes that might be catchphrases
+                    all_words.append(quote.lower())
+        
+        # Count occurrences
+        word_counts = Counter(all_words)
+        
+        # Filter for words that appear frequently
+        frequent_terms = [word for word, count in word_counts.items() 
+                          if count >= min_count and len(word) > 2]
+        
+        # Store for the specific movie if provided
+        if movie_name:
+            self.movie_specific_terms[movie_name] = frequent_terms
+            
+        return frequent_terms
     
-    def train_custom_model(self, texts, labels, save_path=None):
-        """
-        Train a custom sentiment classifier.
+    def _is_neutral_reference(self, text, movie_name=None):
+        """Check if text appears to be a neutral reference to movie content."""
+        # Check for quoted content
+        has_quotes = '"' in text or "'" in text
         
-        Parameters:
-        texts (list): List of text samples
-        labels (list): List of sentiment labels (positive, negative)
-        save_path (str): Path to save the trained model
-        """
-        if self.method != 'custom':
-            print("Warning: Switching to custom method for training")
-            self.method = 'custom'
+        # Check for timestamps (common in YouTube comments referencing specific moments)
+        has_timestamp = bool(re.search(r'(\d+:\d+)|(\d+\s*min)', text))
         
-        # Create a pipeline with TF-IDF and SVM
-        self.model = Pipeline([
-            ('tfidf', TfidfVectorizer(max_features=5000, ngram_range=(1, 2))),
-            ('clf', LinearSVC(C=10, max_iter=2000))
-        ])
+        # Check for movie-specific terms if available
+        has_specific_term = False
+        if movie_name and movie_name in self.movie_specific_terms:
+            terms = self.movie_specific_terms[movie_name]
+            has_specific_term = any(term in text.lower() for term in terms)
         
-        # Train the model
-        self.model.fit(texts, labels)
-        print("Custom model trained successfully")
+        # Check for slang positivity
+        has_slang_positivity = any(re.search(pattern, text.lower()) for pattern in self.slang_positive)
         
-        # Save the model if path is provided
-        if save_path:
-            pickle.dump(self.model, open(save_path, 'wb'))
-            print(f"Model saved to {save_path}")
+        # Consider it neutral if it has quotes, timestamps, or movie-specific terms
+        # unless it has clear negative indicators
+        is_neutral = (has_quotes or has_timestamp or has_specific_term) and not any(
+            indicator in text.lower() for indicator in self.movie_negative_indicators
+        )
         
-        return self
+        # Consider it positive if it has slang positivity indicators
+        is_positive_slang = has_slang_positivity
+        
+        return is_neutral, is_positive_slang
+        
+    def _check_domain_specific_terms(self, text):
+        """Check for domain-specific terms that affect sentiment."""
+        text_lower = text.lower()
+        
+        # Check for positive domain-specific terms
+        has_positive_term = any(term in text_lower for term in self.domain_positive_terms)
+        
+        # Check for context modifiers
+        has_context = any(modifier in text_lower for modifier in self.context_modifiers)
+        
+        # Check for genuine negative indicators
+        has_negative_indicator = any(indicator in text_lower for indicator in self.movie_negative_indicators)
+        
+        # Check for excitement patterns
+        has_excitement = any(re.search(pattern, text_lower) for pattern in self.excitement_patterns)
+        
+        return has_positive_term, has_context, has_negative_indicator, has_excitement
     
-    def analyze_sentiment(self, texts):
+    def _adjust_sentiment(self, polarity, subjectivity, text, movie_name=None):
+        """Adjust TextBlob sentiment based on domain-specific rules."""
+        has_positive_term, has_context, has_negative_indicator, has_excitement = self._check_domain_specific_terms(text)
+        is_neutral_reference, is_positive_slang = self._is_neutral_reference(text, movie_name)
+        
+        adjusted_polarity = polarity
+        
+        # Rule 1: If there's excitement expressed, ensure it's positive
+        if has_excitement and polarity < 0.3:
+            adjusted_polarity = 0.5
+        
+        # Rule 2: If it has slang positivity markers, make it positive
+        if is_positive_slang and polarity < 0.3:
+            adjusted_polarity = 0.7
+        
+        # Rule 3: If it appears to be a neutral reference to movie content, neutralize extreme sentiment
+        if is_neutral_reference and not has_negative_indicator:
+            if polarity < 0:  # If it was classified as negative
+                adjusted_polarity = 0.1  # Make it slightly positive
+        
+        # Rule 4: If contains domain-specific positive terms AND context modifiers,
+        # but was classified as negative, neutralize or make slightly positive
+        if has_positive_term and has_context and polarity < 0:
+            adjusted_polarity = 0.1
+        
+        # Rule 5: If mentions characters/scenes with "positive" domain terms, 
+        # correct negative sentiment
+        if has_positive_term and polarity < 0 and not has_negative_indicator:
+            adjusted_polarity = min(polarity + 0.5, 0.3)  # Boost but don't make too positive
+        
+        # Rule 6: If has genuine negative movie indicators, ensure it's negative
+        if has_negative_indicator and polarity > -0.2:
+            adjusted_polarity = -0.4
+        
+        # Rule 7: Quotes or references to movie lines are usually positive or neutral
+        if '"' in text or "'" in text and polarity < 0:
+            # Check if it's referencing a quote (quotes + context word)
+            if has_context:
+                adjusted_polarity = max(0.1, polarity)
+        
+        # Rule 8: Emoji detection - multiple fire or hearts usually mean positive
+        if re.search(r'(🔥|❤️|😍|👍){2,}', text) and polarity < 0.3:
+            adjusted_polarity = 0.7
+            
+        return adjusted_polarity, subjectivity
+    
+    def analyze_sentiment(self, texts, movie_names=None):
         """
-        Analyze sentiment of texts.
+        Analyze sentiment of texts with domain-specific adjustments.
         
         Parameters:
         texts (list or Series): List of text comments
+        movie_names (list or Series): Optional list of movie names corresponding to each text
         
         Returns:
         DataFrame with original texts and sentiment analysis results
         """
         if isinstance(texts, pd.Series):
             texts = texts.tolist()
+            
+        if movie_names is not None and isinstance(movie_names, pd.Series):
+            movie_names = movie_names.tolist()
         
         results = pd.DataFrame({'text': texts})
-        
-        if self.method == 'textblob':
-            # Use TextBlob for sentiment analysis
-            sentiments = []
-            for text in texts:
-                try:
-                    # Handle None or empty strings
-                    if text is None or not isinstance(text, str) or text.strip() == '':
-                        sentiments.append((0, 0))  # neutral polarity and subjectivity
-                    else:
-                        sentiments.append(TextBlob(text).sentiment)
-                except Exception as e:
-                    print(f"Error analyzing text with TextBlob: {e}")
-                    sentiments.append((0, 0))  # neutral fallback
+        if movie_names is not None:
+            results['movie'] = movie_names
             
-            results['polarity'] = [s[0] for s in sentiments]
-            results['subjectivity'] = [s[1] for s in sentiments]
-            
-            # Categorize sentiment with improved thresholds
-            # Positive: > 0.05, Negative: < -0.02, Neutral: between
-            results['sentiment'] = results['polarity'].apply(
-                lambda x: 'positive' if x > 0.05 else ('negative' if x < -0.02 else 'neutral')
-            )
-            
-        elif self.method == 'custom' and self.model is not None:
-            # Use the custom trained model
-            try:
-                # Filter out None values or empty strings
-                valid_texts = [t if t is not None and isinstance(t, str) else "" for t in texts]
-                predictions = self.model.predict(valid_texts)
-                results['sentiment'] = predictions
-                
-                # If using a model that provides probability scores
-                if hasattr(self.model, 'predict_proba'):
-                    probas = self.model.predict_proba(valid_texts)
-                    for i, class_label in enumerate(self.model.classes_):
-                        results[f'prob_{class_label}'] = probas[:, i]
-            except Exception as e:
-                print(f"Error with custom model: {e}")
-                # Fallback to TextBlob
-                self._fallback_to_textblob(results)
-            
-        elif self.method == 'transformer' and self.transformer is not None:
-            # Use the transformer model
-            try:
-                # Process texts in batches to avoid memory issues
-                batch_size = 32
-                all_predictions = []
-                
-                for i in range(0, len(texts), batch_size):
-                    batch = texts[i:i+batch_size]
-                    batch_predictions = []
-                    
-                    for text in batch:
-                        # Handle None or empty strings
-                        if text is None or not isinstance(text, str) or text.strip() == '':
-                            batch_predictions.append({'label': '3', 'score': 1.0})
-                        else:
-                            # Truncate text to 512 tokens for BERT and ensure it's not empty
-                            truncated_text = text[:512] if len(text) > 512 else text
-                            if truncated_text.strip():
-                                pred = self.transformer(truncated_text)[0]
-                                batch_predictions.append(pred)
-                            else:
-                                batch_predictions.append({'label': '3', 'score': 1.0})  # Neutral fallback
-                    
-                    all_predictions.extend(batch_predictions)
-                
-                # Extract ratings (1-5 stars) and handle different label formats
-                results['rating'] = []
-                results['score'] = []
-                
-                for pred in all_predictions:
-                    try:
-                        # Handle both "1 star" and "1" formats
-                        label = pred['label']
-                        if ' ' in label:
-                            rating = int(label.split()[0])
-                        else:
-                            rating = int(label)
-                        
-                        results['rating'].append(rating)
-                        results['score'].append(pred['score'])
-                    except (ValueError, IndexError):
-                        # Fallback for unexpected format
-                        results['rating'].append(3)  # Neutral fallback
-                        results['score'].append(1.0)
-                
-                # Convert ratings to sentiment categories
-                results['sentiment'] = results['rating'].apply(
-                    lambda x: 'negative' if x <= 2 else ('neutral' if x == 3 else 'positive')
-                )
-            except Exception as e:
-                print(f"Error in transformer analysis: {e}")
-                # Fallback to TextBlob
-                self._fallback_to_textblob(results)
-        
+            # Extract frequent terms for each movie
+            for movie in set(movie_names):
+                movie_texts = [text for text, m in zip(texts, movie_names) if m == movie]
+                self._extract_frequent_terms(movie_texts, movie, min_count=3)
         else:
-            # Fallback to TextBlob if method is invalid or model not loaded
-            self._fallback_to_textblob(results)
+            # If no movie names provided, extract terms from all texts
+            self._extract_frequent_terms(texts, min_count=5)
         
-        return results
-    
-    def _fallback_to_textblob(self, results):
-        """Helper method to provide TextBlob sentiment as fallback"""
+        # Use TextBlob for initial sentiment analysis
         sentiments = []
-        for text in results['text']:
+        for i, text in enumerate(texts):
             try:
+                # Handle None or empty strings
                 if text is None or not isinstance(text, str) or text.strip() == '':
                     sentiments.append((0, 0))  # neutral polarity and subjectivity
                 else:
-                    sentiments.append(TextBlob(text).sentiment)
-            except:
+                    # Get basic TextBlob sentiment
+                    initial_sentiment = TextBlob(text).sentiment
+                    
+                    # Apply domain-specific adjustments
+                    movie = movie_names[i] if movie_names is not None and i < len(movie_names) else None
+                    adjusted_sentiment = self._adjust_sentiment(
+                        initial_sentiment.polarity,
+                        initial_sentiment.subjectivity,
+                        text,
+                        movie
+                    )
+                    sentiments.append(adjusted_sentiment)
+            except Exception as e:
+                print(f"Error analyzing text: {e}")
                 sentiments.append((0, 0))  # neutral fallback
-                
+        
         results['polarity'] = [s[0] for s in sentiments]
         results['subjectivity'] = [s[1] for s in sentiments]
+        
+        # Categorize sentiment with improved thresholds for movie context
+        # More strict for negative classification to avoid false negatives
         results['sentiment'] = results['polarity'].apply(
-            lambda x: 'positive' if x > 0.05 else ('negative' if x < -0.02 else 'neutral')
+            lambda x: 'positive' if x > 0.05 else ('negative' if x < -0.15 else 'neutral')
         )
-    
-    def compare_sentiment_methods(self, texts):
-        """
-        Compare different sentiment analysis methods on the same texts.
         
-        Parameters:
-        texts (list): List of text comments
-        
-        Returns:
-        DataFrame with results from multiple methods
-        """
-        # Save current method
-        current_method = self.method
-        
-        # Get TextBlob results
-        self.method = 'textblob'
-        textblob_results = self.analyze_sentiment(texts)
-        
-        # Try to get transformer results
-        transformer_results = None
-        try:
-            self.method = 'transformer'
-            if self.transformer is None:
-                # Initialize transformer if needed
-                self.transformer = pipeline("sentiment-analysis", 
-                                         model="nlptown/bert-base-multilingual-uncased-sentiment")
-            transformer_results = self.analyze_sentiment(texts)
-        except Exception as e:
-            print(f"Error with transformer: {e}")
-            transformer_results = None
-        
-        # Restore original method
-        self.method = current_method
-        
-        # Combine results
-        comparison = pd.DataFrame({
-            'text': texts,
-            'textblob_sentiment': textblob_results['sentiment'],
-            'textblob_polarity': textblob_results['polarity']
-        })
-        
-        if transformer_results is not None and 'sentiment' in transformer_results.columns:
-            comparison['transformer_sentiment'] = transformer_results['sentiment']
-            if 'rating' in transformer_results.columns:
-                comparison['transformer_rating'] = transformer_results['rating']
-        else:
-            # Add placeholder columns to avoid KeyError
-            comparison['transformer_sentiment'] = 'neutral'
-            comparison['transformer_rating'] = 3
-        
-        # If custom model is available, add its predictions
-        if self.model is not None:
-            try:
-                self.method = 'custom'
-                custom_results = self.analyze_sentiment(texts)
-                comparison['custom_sentiment'] = custom_results['sentiment']
-            except Exception as e:
-                print(f"Error with custom model: {e}")
-                comparison['custom_sentiment'] = 'neutral'
-        
-        return comparison
+        return results
 
 def get_sentiment_distribution(df, sentiment_column='sentiment', group_by=None):
     """
@@ -283,29 +262,25 @@ def get_sentiment_distribution(df, sentiment_column='sentiment', group_by=None):
     Returns:
     DataFrame with sentiment distribution
     """
-    try:
-        # Check for valid data
-        if df is None or sentiment_column not in df.columns:
-            return pd.DataFrame()
-        
-        if group_by:
-            if group_by not in df.columns:
-                print(f"Column '{group_by}' not found in DataFrame")
-                return pd.DataFrame()
-                
-            sentiment_counts = df.groupby([group_by, sentiment_column]).size().unstack().fillna(0)
-            
-            # Ensure all sentiment categories are present
-            for cat in ['positive', 'negative', 'neutral']:
-                if cat not in sentiment_counts.columns:
-                    sentiment_counts[cat] = 0
-            
-            return sentiment_counts
-        else:
-            return df[sentiment_column].value_counts().to_frame()
-    except Exception as e:
-        print(f"Error in get_sentiment_distribution: {e}")
+    # Check for valid data
+    if df is None or sentiment_column not in df.columns:
         return pd.DataFrame()
+    
+    if group_by:
+        if group_by not in df.columns:
+            print(f"Column '{group_by}' not found in DataFrame")
+            return pd.DataFrame()
+            
+        sentiment_counts = df.groupby([group_by, sentiment_column]).size().unstack().fillna(0)
+        
+        # Ensure all sentiment categories are present
+        for cat in ['positive', 'negative', 'neutral']:
+            if cat not in sentiment_counts.columns:
+                sentiment_counts[cat] = 0
+        
+        return sentiment_counts
+    else:
+        return df[sentiment_column].value_counts().to_frame()
 
 def get_top_comments(df, sentiment_category, n=5, sentiment_column='sentiment', text_column='text'):
     """
@@ -321,77 +296,43 @@ def get_top_comments(df, sentiment_category, n=5, sentiment_column='sentiment', 
     Returns:
     DataFrame with top comments
     """
-    try:
-        # Check for valid data
-        if df is None or sentiment_column not in df.columns or text_column not in df.columns:
-            print(f"Missing required columns in DataFrame")
-            return pd.DataFrame({text_column: [], sentiment_column: []})
-        
-        # Filter by sentiment category
-        filtered_df = df[df[sentiment_column] == sentiment_category].copy()
-        
-        if filtered_df.empty:
-            return pd.DataFrame({text_column: [], sentiment_column: []})
-        
-        # If polarity column exists, sort by absolute polarity
-        if 'polarity' in filtered_df.columns:
-            if sentiment_category == 'negative':
-                # For negative, sort by most negative (lowest polarity)
-                filtered_df = filtered_df.sort_values(by='polarity', ascending=True)
-            else:
-                # For positive/neutral, sort by highest polarity
-                filtered_df = filtered_df.sort_values(by='polarity', ascending=False)
-        
-        # If rating exists (from transformer), sort by rating
-        elif 'rating' in filtered_df.columns:
-            if sentiment_category == 'negative':
-                # For negative, sort by lowest rating
-                filtered_df = filtered_df.sort_values(by='rating', ascending=True)
-            else:
-                # For positive/neutral, sort by highest rating
-                filtered_df = filtered_df.sort_values(by='rating', ascending=False)
-        
-        # Select top n comments
-        top_comments = filtered_df.head(n)[[text_column, sentiment_column]]
-        
-        return top_comments
-    except Exception as e:
-        print(f"Error in get_top_comments: {e}")
+    # Check for valid data
+    if df is None or sentiment_column not in df.columns or text_column not in df.columns:
+        print(f"Missing required columns in DataFrame")
         return pd.DataFrame({text_column: [], sentiment_column: []})
-
-def sentiment_over_time(df, date_column='date', sentiment_column='sentiment'):
-    """
-    Analyze sentiment trends over time.
     
-    Parameters:
-    df (DataFrame): DataFrame with sentiment data
-    date_column (str): Column containing date information
-    sentiment_column (str): Column containing sentiment categories
+    # Filter by sentiment category
+    filtered_df = df[df[sentiment_column] == sentiment_category].copy()
     
-    Returns:
-    DataFrame with sentiment breakdown by time period
-    """
-    try:
-        # Check for valid data
-        if df is None or date_column not in df.columns or sentiment_column not in df.columns:
-            print(f"Missing required columns in DataFrame")
-            return pd.DataFrame()
+    if filtered_df.empty:
+        return pd.DataFrame({text_column: [], sentiment_column: []})
+    
+    # For negative sentiment, add additional filtering
+    if sentiment_category == 'negative':
+        # Create a SentimentAnalyzer instance to get negative indicators
+        analyzer = SentimentAnalyzer()
         
-        # Ensure date column is in datetime format
-        if not pd.api.types.is_datetime64_dtype(df[date_column]):
-            df[date_column] = pd.to_datetime(df[date_column], errors='coerce')
+        # Check for genuine negative indicators
+        def has_negative_indicator(text):
+            if not isinstance(text, str):
+                return False
+            return any(indicator in text.lower() for indicator in analyzer.movie_negative_indicators)
         
-        # Drop rows with invalid dates
-        df = df.dropna(subset=[date_column])
+        # Add a column indicating if the comment has genuine negative indicators
+        filtered_df['has_negative'] = filtered_df[text_column].apply(has_negative_indicator)
         
-        # Group by date and sentiment
-        time_sentiment = df.groupby([pd.Grouper(key=date_column, freq='D'), sentiment_column]).size().unstack().fillna(0)
-        
-        # Calculate proportions
-        for col in time_sentiment.columns:
-            time_sentiment[f'{col}_pct'] = time_sentiment[col] / time_sentiment.sum(axis=1)
-        
-        return time_sentiment
-    except Exception as e:
-        print(f"Error in sentiment_over_time: {e}")
-        return pd.DataFrame()
+        # If we have enough comments with genuine negative indicators, filter to those
+        if filtered_df['has_negative'].sum() >= n:
+            filtered_df = filtered_df[filtered_df['has_negative']]
+    
+    # Sort by polarity (most extreme first)
+    if 'polarity' in filtered_df.columns:
+        if sentiment_category == 'negative':
+            filtered_df = filtered_df.sort_values(by='polarity', ascending=True)
+        else:
+            filtered_df = filtered_df.sort_values(by='polarity', ascending=False)
+    
+    # Select top n comments
+    top_comments = filtered_df.head(n)[[text_column, sentiment_column]]
+    
+    return top_comments

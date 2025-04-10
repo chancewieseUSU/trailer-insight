@@ -3,156 +3,245 @@ import numpy as np
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_score
 from sklearn.decomposition import PCA
-import matplotlib.pyplot as plt
-import seaborn as sns
 from collections import Counter
+import re
 
 class CommentClusterer:
-    """Class for clustering comments into thematic groups."""
+    """Improved class for clustering comments into meaningful thematic groups."""
     
-    def __init__(self, n_clusters=5, max_features=5000, random_state=42):
+    def __init__(self, n_clusters=5, random_state=42):
         """
         Initialize the clusterer.
         
         Parameters:
         n_clusters (int): Number of clusters to create
-        max_features (int): Maximum number of features for TF-IDF
         random_state (int): Random seed for reproducibility
         """
         self.n_clusters = n_clusters
-        self.max_features = max_features
         self.random_state = random_state
         self.vectorizer = TfidfVectorizer(
-            max_features=max_features,
-            min_df=3,
-            max_df=0.85,
+            min_df=2,
+            max_df=0.9,
             ngram_range=(1, 2),
             stop_words='english'
         )
         self.kmeans = KMeans(
             n_clusters=n_clusters,
             random_state=random_state,
-            n_init=10,
-            max_iter=300
+            n_init=10
         )
         self.feature_names = None
         self.cluster_centers = None
-        
-    def find_optimal_clusters(self, texts, min_clusters=2, max_clusters=10):
+        self.theme_patterns = self._create_theme_patterns()
+    
+    def _create_theme_patterns(self):
+        """Create patterns for identifying comment themes."""
+        return {
+            # Excitement & Anticipation
+            'anticipation': [
+                'cant wait', "can't wait", 'looking forward', 'excited', 'hyped',
+                'excited for', 'hype', 'finally', 'hope', 'please', 'imagine',
+                'gonna be', 'going to be', 'will be', 'should be'
+            ],
+            
+            # Visual/Effects commentary
+            'visuals': [
+                'looks', 'animation', 'effects', 'graphics', 'cgi', 'beautiful',
+                'stunning', 'gorgeous', 'ugly', 'realistic', 'detailed', 'style',
+                'visuals', 'visual', 'design'
+            ],
+            
+            # Actor & Character focused
+            'characters': [
+                'actor', 'actress', 'character', 'protagonist', 'villain', 
+                'cast', 'casting', 'role', 'voice', 'voices', 'performances',
+                'played by', 'star', 'stars', 'starring'
+            ],
+            
+            # Comparing to other media
+            'comparison': [
+                'better than', 'worse than', 'reminds me', 'similar to', 'like the',
+                'just like', 'compared to', 'copy', 'ripoff', 'inspired by',
+                'original', 'sequel', 'prequel', 'franchise', 'universe'
+            ],
+            
+            # References & Callbacks
+            'references': [
+                'reference', 'easter egg', 'callback', 'tribute', 'homage',
+                'nod to', 'classic', 'iconic', 'remember', 'throwback'
+            ],
+            
+            # Story & Plot Commentary
+            'story': [
+                'story', 'plot', 'writing', 'narrative', 'ending', 'beginning',
+                'twist', 'surprise', 'predictable', 'cliche', 'classic', 'arc',
+                'character development', 'script', 'screenplay', 'adaptation'
+            ],
+            
+            # Emotional Reactions
+            'emotion': [
+                'love', 'hate', 'amazing', 'awesome', 'terrible', 'awful',
+                'best', 'worst', 'glad', 'sad', 'laugh', 'cry', 'emotional',
+                'hilarious', 'epic', 'shocking', 'touching', 'boring'
+            ],
+            
+            # Specific Scene/Moment Comments
+            'moments': [
+                r'\d+:\d+', 'scene', 'moment', 'part', 'favorite part',
+                'best part', 'worst part', 'during', 'when', 'this part'
+            ],
+            
+            # Quotation of Lines
+            'quotes': [
+                r'"[^"]+"', r"'[^']+'", 'saying', 'said', 'quote', 'quotes',
+                'line', 'lines', 'dialogue', 'monologue'
+            ],
+            
+            # Criticism
+            'criticism': [
+                'disappointed', 'disappointing', 'bad', 'terrible', 'awful',
+                'worst', 'waste', 'trash', 'garbage', 'hate', 'stupid',
+                'boring', 'problem', 'issue', 'wrong', 'mistake', 'missed',
+                'ruined', 'ruin', 'destroyed', 'cash grab'
+            ],
+            
+            # Production Discussion
+            'production': [
+                'director', 'producer', 'writer', 'studio', 'budget',
+                'production', 'release', 'delayed', 'postponed', 'announced',
+                'trailer', 'teaser', 'behind the scenes', 'making of'
+            ]
+        }
+    
+    def fit_transform(self, texts, additional_features=None):
         """
-        Find the optimal number of clusters using silhouette score.
+        Fit the clustering model and transform texts.
         
         Parameters:
         texts (list): List of preprocessed comments
-        min_clusters (int): Minimum number of clusters to try
-        max_clusters (int): Maximum number of clusters to try
+        additional_features (DataFrame): Optional additional features for clustering
         
         Returns:
-        int: Optimal number of clusters
+        tuple: (cluster_labels, cluster_terms, theme_mapping)
         """
         # Clean and validate texts
         valid_texts = self._preprocess_texts(texts)
         
-        try:
-            # Get document vectors
-            X = self.vectorizer.fit_transform(valid_texts)
-            self.feature_names = self.vectorizer.get_feature_names_out()
+        # Extract theme indicators
+        theme_indicators = self._extract_theme_indicators(valid_texts)
+        
+        # Get document vectors from TF-IDF
+        X = self.vectorizer.fit_transform(valid_texts)
+        self.feature_names = self.vectorizer.get_feature_names_out()
+        
+        # If we have additional features, combine them with TF-IDF
+        if additional_features is not None:
+            # Normalize additional features
+            normalized_features = (additional_features - additional_features.mean()) / additional_features.std()
+            # Convert sparse matrix to dense and combine
+            X_dense = X.toarray()
+            X_combined = np.hstack((X_dense, normalized_features.values))
+        else:
+            X_combined = X
+        
+        # Fit KMeans
+        self.kmeans.fit(X_combined)
+        self.cluster_centers = self.kmeans.cluster_centers_
+        
+        # Get cluster assignments
+        cluster_labels = self.kmeans.predict(X_combined)
+        
+        # Get top terms per cluster
+        cluster_terms = self._get_top_terms_per_cluster()
+        
+        # Map clusters to themes
+        theme_mapping = self._map_clusters_to_themes(cluster_labels, theme_indicators)
+        
+        return cluster_labels, cluster_terms, theme_mapping
+    
+    def _extract_theme_indicators(self, texts):
+        """
+        Extract theme indicators from texts.
+        
+        Parameters:
+        texts (list): List of preprocessed comments
+        
+        Returns:
+        DataFrame: DataFrame with theme indicators
+        """
+        theme_indicators = {theme: [] for theme in self.theme_patterns}
+        
+        for text in texts:
+            text_lower = text.lower()
             
-            # Try different numbers of clusters
-            silhouette_scores = []
-            for n_clusters in range(min_clusters, max_clusters + 1):
-                try:
-                    kmeans = KMeans(
-                        n_clusters=n_clusters,
-                        random_state=self.random_state,
-                        n_init=10
-                    )
-                    cluster_labels = kmeans.fit_predict(X)
-                    
-                    # Calculate silhouette score
-                    silhouette_avg = silhouette_score(X, cluster_labels)
-                    silhouette_scores.append(silhouette_avg)
-                    print(f"For n_clusters = {n_clusters}, silhouette score = {silhouette_avg:.3f}")
-                except Exception as e:
-                    print(f"Error calculating silhouette score for {n_clusters} clusters: {e}")
-                    silhouette_scores.append(-1)  # Use negative value to indicate error
+            # Check each theme
+            for theme, patterns in self.theme_patterns.items():
+                # Check if any pattern matches
+                has_theme = any(
+                    re.search(r'\b' + re.escape(pattern) + r'\b', text_lower) 
+                    if not pattern.startswith(r'\\') and not pattern.startswith('"') and not pattern.startswith("'")
+                    else re.search(pattern, text_lower) 
+                    for pattern in patterns
+                )
+                theme_indicators[theme].append(1 if has_theme else 0)
+        
+        return pd.DataFrame(theme_indicators)
+    
+    def _map_clusters_to_themes(self, cluster_labels, theme_indicators):
+        """
+        Map clusters to themes based on theme indicators.
+        
+        Parameters:
+        cluster_labels (array): Cluster assignments
+        theme_indicators (DataFrame): DataFrame with theme indicators
+        
+        Returns:
+        dict: Dictionary mapping cluster IDs to theme descriptions
+        """
+        # Add cluster labels to theme indicators
+        theme_indicators['cluster'] = cluster_labels
+        
+        # Calculate theme prevalence for each cluster
+        cluster_themes = {}
+        
+        for cluster_id in range(self.n_clusters):
+            # Get theme indicators for this cluster
+            cluster_theme_indicators = theme_indicators[theme_indicators['cluster'] == cluster_id]
             
-            # Find the best number of clusters
-            if silhouette_scores:
-                optimal_clusters = min_clusters + np.argmax(silhouette_scores)
-                self.n_clusters = optimal_clusters
-                print(f"Optimal number of clusters: {optimal_clusters}")
-                return optimal_clusters
-            else:
-                print(f"Could not determine optimal clusters, using default: {self.n_clusters}")
-                return self.n_clusters
+            if cluster_theme_indicators.empty:
+                cluster_themes[cluster_id] = "Miscellaneous"
+                continue
+            
+            # Calculate theme prevalence
+            theme_prevalence = cluster_theme_indicators.drop('cluster', axis=1).mean()
+            
+            # Get most prevalent themes (above threshold)
+            threshold = max(0.15, theme_prevalence.max() * 0.7)  # At least 15% or 70% of max
+            top_themes = theme_prevalence[theme_prevalence >= threshold].sort_values(ascending=False)
+            
+            if top_themes.empty:
+                # If no themes above threshold, use top 2
+                top_themes = theme_prevalence.sort_values(ascending=False).head(2)
+            
+            # Create theme description
+            top_theme_names = top_themes.index.tolist()
+            if top_theme_names:
+                # Convert to title case and join
+                theme_names = [name.title() for name in top_theme_names]
+                cluster_themes[cluster_id] = " & ".join(theme_names[:2])
                 
-        except Exception as e:
-            print(f"Error in find_optimal_clusters: {e}")
-            return self.n_clusters
+                # Add specific sentiment if available
+                if 'emotion' in theme_names and 'criticism' in theme_names:
+                    cluster_themes[cluster_id] = "Critical Comments"
+                elif 'emotion' in theme_names and 'emotion' in top_theme_names[:1]:
+                    cluster_themes[cluster_id] = "Emotional Reactions"
+            else:
+                cluster_themes[cluster_id] = "Miscellaneous"
+        
+        return cluster_themes
     
-    def fit(self, texts):
-        """
-        Fit the clustering model.
-        
-        Parameters:
-        texts (list): List of preprocessed comments
-        
-        Returns:
-        self: The fitted model
-        """
-        # Clean and validate texts
-        valid_texts = self._preprocess_texts(texts)
-        
-        try:
-            # Get document vectors
-            X = self.vectorizer.fit_transform(valid_texts)
-            self.feature_names = self.vectorizer.get_feature_names_out()
-            
-            # Fit KMeans
-            self.kmeans = KMeans(
-                n_clusters=self.n_clusters,
-                random_state=self.random_state,
-                n_init=10
-            )
-            self.kmeans.fit(X)
-            self.cluster_centers = self.kmeans.cluster_centers_
-            
-            return self
-        except Exception as e:
-            print(f"Error in fit: {e}")
-            # Initialize with empty values so other methods don't crash
-            self.feature_names = np.array([])
-            self.cluster_centers = np.zeros((self.n_clusters, 1))
-            return self
-    
-    def predict(self, texts):
-        """
-        Predict cluster labels for new texts.
-        
-        Parameters:
-        texts (list): List of preprocessed comments
-        
-        Returns:
-        array: Cluster labels
-        """
-        # Clean and validate texts
-        valid_texts = self._preprocess_texts(texts)
-        
-        try:
-            # Transform texts to TF-IDF vectors
-            X = self.vectorizer.transform(valid_texts)
-            
-            # Predict cluster labels
-            return self.kmeans.predict(X)
-        except Exception as e:
-            print(f"Error in predict: {e}")
-            # Return default labels as fallback
-            return np.zeros(len(valid_texts), dtype=int)
-    
-    def get_top_terms_per_cluster(self, n_terms=10):
+    def _get_top_terms_per_cluster(self, n_terms=10):
         """
         Get the top terms for each cluster.
         
@@ -162,107 +251,34 @@ class CommentClusterer:
         Returns:
         dict: Dictionary mapping cluster IDs to top terms
         """
-        try:
-            # Check if model has been fitted
-            if self.feature_names is None or self.cluster_centers is None:
-                raise ValueError("Model has not been fitted yet")
-            
-            # Get the feature names
-            feature_names = self.feature_names
-            
-            # Get the cluster centroids
-            centroids = self.cluster_centers
-            
-            # Get top terms for each cluster
-            cluster_terms = {}
-            for i in range(self.n_clusters):
+        # Check if model has been fitted
+        if self.feature_names is None or self.cluster_centers is None:
+            return {}
+        
+        # Get the feature names
+        feature_names = self.feature_names
+        
+        # Get the cluster centroids
+        centroids = self.cluster_centers
+        
+        # Get top terms for each cluster
+        cluster_terms = {}
+        for i in range(self.n_clusters):
+            # If centroids is 2D (TF-IDF only)
+            if len(centroids.shape) == 2 and centroids.shape[1] >= len(feature_names):
                 # Get the indices of the top terms
-                indices = centroids[i].argsort()[-n_terms:][::-1]
-                
+                indices = centroids[i, :len(feature_names)].argsort()[-n_terms:][::-1]
                 # Get the corresponding terms
                 terms = [feature_names[j] for j in indices]
-                cluster_terms[i] = terms
+            else:
+                # If we used additional features, just get top TF-IDF terms
+                tfidf_centroid = centroids[i][:len(feature_names)]
+                indices = tfidf_centroid.argsort()[-n_terms:][::-1]
+                terms = [feature_names[j] for j in indices]
             
-            return cluster_terms
-        except Exception as e:
-            print(f"Error in get_top_terms_per_cluster: {e}")
-            # Return empty dictionary as fallback
-            return {i: ["term_error"] for i in range(self.n_clusters)}
-    
-    def visualize_clusters(self, texts, labels=None, save_path=None):
-        """
-        Visualize clusters using PCA.
+            cluster_terms[i] = terms
         
-        Parameters:
-        texts (list): List of preprocessed comments
-        labels (array): Cluster labels (if None, will be predicted)
-        save_path (str): Path to save the visualization
-        
-        Returns:
-        None
-        """
-        # Clean and validate texts
-        valid_texts = self._preprocess_texts(texts)
-        
-        try:
-            # Get document vectors
-            X = self.vectorizer.transform(valid_texts)
-            
-            # Get cluster labels if not provided
-            if labels is None:
-                labels = self.kmeans.predict(X)
-            
-            # Reduce dimensionality with PCA
-            pca = PCA(n_components=2, random_state=self.random_state)
-            pca_result = pca.fit_transform(X.toarray())
-            
-            # Create DataFrame for plotting
-            df = pd.DataFrame({
-                'x': pca_result[:, 0],
-                'y': pca_result[:, 1],
-                'Cluster': labels
-            })
-            
-            # Create plot
-            plt.figure(figsize=(10, 8))
-            sns.scatterplot(data=df, x='x', y='y', hue='Cluster', palette='viridis')
-            plt.title(f'Clusters Visualization (n_clusters={self.n_clusters})')
-            plt.xlabel('PCA Component 1')
-            plt.ylabel('PCA Component 2')
-            
-            # Save plot if path is provided
-            if save_path:
-                plt.savefig(save_path, bbox_inches='tight')
-                print(f"Plot saved to {save_path}")
-            
-            # Show plot
-            plt.tight_layout()
-            plt.show()
-            
-        except Exception as e:
-            print(f"Error in visualize_clusters: {e}")
-    
-    def get_cluster_distribution(self, texts, labels=None):
-        """
-        Get the distribution of texts across clusters.
-        
-        Parameters:
-        texts (list): List of preprocessed comments
-        labels (array): Cluster labels (if None, will be predicted)
-        
-        Returns:
-        Counter: Counts of comments in each cluster
-        """
-        try:
-            # Get cluster labels if not provided
-            if labels is None:
-                labels = self.predict(texts)
-            
-            # Count labels
-            return Counter(labels)
-        except Exception as e:
-            print(f"Error in get_cluster_distribution: {e}")
-            return Counter()
+        return cluster_terms
     
     def _preprocess_texts(self, texts):
         """
@@ -288,243 +304,109 @@ class CommentClusterer:
                 valid_texts.append(text)
         
         return valid_texts
-    
-    def save_model(self, filepath):
-        """
-        Save the clustering model.
-        
-        Parameters:
-        filepath (str): Path to save the model
-        
-        Returns:
-        bool: Success flag
-        """
-        try:
-            import pickle
-            
-            # Create model data
-            model_data = {
-                'n_clusters': self.n_clusters,
-                'max_features': self.max_features,
-                'random_state': self.random_state,
-                'vectorizer': self.vectorizer,
-                'kmeans': self.kmeans,
-                'feature_names': self.feature_names,
-                'cluster_centers': self.cluster_centers
-            }
-            
-            # Save model
-            with open(filepath, 'wb') as f:
-                pickle.dump(model_data, f)
-            
-            print(f"Model saved to {filepath}")
-            return True
-        except Exception as e:
-            print(f"Error saving model: {e}")
-            return False
-    
-    @classmethod
-    def load_model(cls, filepath):
-        """
-        Load a saved clustering model.
-        
-        Parameters:
-        filepath (str): Path to the saved model
-        
-        Returns:
-        CommentClusterer: Loaded model
-        """
-        try:
-            import pickle
-            
-            # Load model data
-            with open(filepath, 'rb') as f:
-                model_data = pickle.load(f)
-            
-            # Create new instance
-            model = cls(
-                n_clusters=model_data['n_clusters'],
-                max_features=model_data['max_features'],
-                random_state=model_data['random_state']
-            )
-            
-            # Set model attributes
-            model.vectorizer = model_data['vectorizer']
-            model.kmeans = model_data['kmeans']
-            model.feature_names = model_data['feature_names']
-            model.cluster_centers = model_data['cluster_centers']
-            
-            print(f"Model loaded from {filepath}")
-            return model
-        except Exception as e:
-            print(f"Error loading model: {e}")
-            return None
 
-def enhance_clustering(comments_df, n_clusters=6):
+def create_cluster_visualization(df, cluster_col='cluster', theme_mapping=None):
     """
-    Enhance clustering implementation with meaningful labels and analysis.
+    Create visualization data for clusters with shortened labels for graphs.
+    
+    Parameters:
+    df (DataFrame): DataFrame with clustered comments
+    cluster_col (str): Column with cluster assignments
+    theme_mapping (dict): Dictionary mapping cluster IDs to theme descriptions
+    
+    Returns:
+    dict: Visualization data for clusters
+    """
+    # Count comments per cluster
+    cluster_counts = df[cluster_col].value_counts().sort_index()
+    
+    # Get cluster labels (use theme mapping if available)
+    if theme_mapping:
+        # Create full labels
+        full_labels = [f"{theme_mapping.get(i, f'Cluster {i}')} (Cluster {i})" 
+                     for i in cluster_counts.index]
+        
+        # Create short labels for graphs
+        short_labels = []
+        for i in cluster_counts.index:
+            theme = theme_mapping.get(i, f"Cluster {i}")
+            # Extract just the main theme (before the colon)
+            main_theme = theme.split(':')[0]
+            # If it has "Emotion & Production", just take "Emotion"
+            if '&' in main_theme:
+                main_theme = main_theme.split('&')[0].strip()
+            short_labels.append(f"{main_theme} ({i})")
+    else:
+        full_labels = [f"Cluster {i}" for i in cluster_counts.index]
+        short_labels = [f"Cluster {i}" for i in cluster_counts.index]
+    
+    # Get sentiment distribution by cluster
+    sentiment_by_cluster = None
+    if 'sentiment' in df.columns:
+        sentiment_by_cluster = pd.crosstab(
+            df[cluster_col], df['sentiment'], normalize='index'
+        )
+    
+    return {
+        'counts': cluster_counts,
+        'labels': full_labels,
+        'short_labels': short_labels,
+        'sentiment': sentiment_by_cluster
+    }
+
+def cluster_comments(comments_df, text_column='clean_text', n_clusters=5, include_sentiment=True):
+    """
+    Cluster comments and add cluster labels to the dataframe.
     
     Parameters:
     comments_df (DataFrame): DataFrame with comment data
+    text_column (str): Column containing text to cluster
     n_clusters (int): Number of clusters
+    include_sentiment (bool): Whether to include sentiment as a feature
     
     Returns:
-    dict: Dict with clustering results, labels, and analysis
+    tuple: (DataFrame with cluster labels, cluster descriptions, cluster terms, sentiment by cluster)
     """
-    from src.preprocessing.clean_text import clean_text_for_clustering
-    import pandas as pd
-    
-    # Ensure we have clean text for clustering
-    if 'clean_text' not in comments_df.columns:
-        comments_df['clustering_text'] = comments_df['text'].apply(clean_text_for_clustering)
-    else:
-        comments_df['clustering_text'] = comments_df['clean_text']
-    
     # Initialize and fit clusterer
     clusterer = CommentClusterer(n_clusters=n_clusters)
-    clusterer.fit(comments_df['clustering_text'])
     
-    # Get cluster assignments
-    cluster_labels = clusterer.predict(comments_df['clustering_text'])
-    comments_df['cluster'] = cluster_labels
+    # Prepare additional features if requested
+    additional_features = None
+    if include_sentiment and 'polarity' in comments_df.columns:
+        # Create features from sentiment data
+        additional_features = pd.DataFrame({
+            'polarity': comments_df['polarity'],
+        })
+        
+        # Add sentiment category as one-hot features
+        if 'sentiment' in comments_df.columns:
+            sentiment_dummies = pd.get_dummies(comments_df['sentiment'], prefix='sentiment')
+            additional_features = pd.concat([additional_features, sentiment_dummies], axis=1)
     
-    # Get top terms per cluster
-    cluster_terms = clusterer.get_top_terms_per_cluster(n_terms=10)
+    # Fit and transform
+    cluster_labels, cluster_terms, theme_mapping = clusterer.fit_transform(
+        comments_df[text_column], 
+        additional_features=additional_features
+    )
     
-    # Generate meaningful cluster labels
+    # Add cluster assignments to DataFrame
+    df_with_clusters = comments_df.copy()
+    df_with_clusters['cluster'] = cluster_labels
+    
+    # Get sentiment distribution by cluster (if sentiment column exists)
+    sentiment_by_cluster = None
+    if 'sentiment' in df_with_clusters.columns:
+        sentiment_by_cluster = pd.crosstab(
+            df_with_clusters['cluster'], 
+            df_with_clusters['sentiment'],
+            normalize='index'
+        )
+    
+    # Create expanded cluster descriptions with top terms
     cluster_descriptions = {}
-    for cluster_id, terms in cluster_terms.items():
-        # Use the top 3 terms to generate a descriptive label
-        top_terms = terms[:3]
-        
-        # Define common themes based on top terms
-        theme_patterns = {
-            'acting': ['actor', 'actress', 'performance', 'cast', 'acting'],
-            'visual': ['visual', 'effects', 'cgi', 'beautiful', 'cinematography', 'scene'],
-            'story': ['story', 'plot', 'narrative', 'writing', 'screenplay'],
-            'excitement': ['excited', 'cant wait', 'amazing', 'awesome', 'great', 'love'],
-            'criticism': ['bad', 'worst', 'terrible', 'awful', 'hate', 'boring'],
-            'comparison': ['better', 'worse', 'original', 'sequel', 'previous', 'first'],
-            'character': ['character', 'protagonist', 'villain', 'hero'],
-            'director': ['director', 'filmmaker', 'directed']
-        }
-        
-        # Check which themes are present in the terms
-        themes = []
-        for theme, patterns in theme_patterns.items():
-            if any(term in patterns for term in terms) or any(pattern in ' '.join(terms) for pattern in patterns):
-                themes.append(theme)
-        
-        # Create label based on themes and top terms
-        if themes:
-            cluster_descriptions[cluster_id] = f"{'/'.join(themes)} ({', '.join(top_terms[:3])})"
-        else:
-            cluster_descriptions[cluster_id] = f"Cluster {cluster_id}: {', '.join(top_terms[:3])}"
+    for cluster_id, theme in theme_mapping.items():
+        top_terms = cluster_terms.get(cluster_id, [])[:5]  # Get top 5 terms
+        terms_str = ", ".join(top_terms)
+        cluster_descriptions[cluster_id] = f"{theme}: {terms_str}"
     
-    # Analyze sentiment distribution by cluster
-    sentiment_by_cluster = pd.crosstab(
-        comments_df['cluster'], 
-        comments_df['sentiment'] if 'sentiment' in comments_df.columns else pd.Series('unknown', index=comments_df.index),
-        normalize='index'
-    )
-    
-    # Identify dominant sentiment for each cluster
-    cluster_sentiments = {}
-    for cluster_id in range(n_clusters):
-        if cluster_id in sentiment_by_cluster.index:
-            if 'positive' in sentiment_by_cluster.columns and 'negative' in sentiment_by_cluster.columns:
-                pos_pct = sentiment_by_cluster.loc[cluster_id, 'positive']
-                neg_pct = sentiment_by_cluster.loc[cluster_id, 'negative']
-                
-                if pos_pct > 0.6:
-                    sentiment = "Strongly Positive"
-                elif pos_pct > 0.4:
-                    sentiment = "Moderately Positive"
-                elif neg_pct > 0.6:
-                    sentiment = "Strongly Negative"
-                elif neg_pct > 0.4:
-                    sentiment = "Moderately Negative"
-                else:
-                    sentiment = "Mixed/Neutral"
-                
-                cluster_sentiments[cluster_id] = sentiment
-    
-    # Combine sentiment with descriptions
-    for cluster_id, description in cluster_descriptions.items():
-        if cluster_id in cluster_sentiments:
-            cluster_descriptions[cluster_id] = f"{description} - {cluster_sentiments[cluster_id]}"
-    
-    return {
-        "cluster_terms": cluster_terms,
-        "cluster_descriptions": cluster_descriptions,
-        "sentiment_by_cluster": sentiment_by_cluster,
-        "comments_df": comments_df
-    }
-
-def analyze_cluster_revenue_correlation(comments_df, movies_df):
-    """
-    Analyze which comment clusters correlate best with box office success.
-    
-    Parameters:
-    comments_df (DataFrame): DataFrame with comment data including clusters
-    movies_df (DataFrame): DataFrame with movie data including revenue
-    
-    Returns:
-    dict: Dictionary with cluster-revenue correlation results
-    """
-    import pandas as pd
-    import numpy as np
-    
-    # Ensure we have cluster assignments
-    if 'cluster' not in comments_df.columns:
-        return {"error": "Comments DataFrame doesn't have cluster assignments"}
-    
-    # Calculate cluster distribution per movie
-    cluster_distribution = pd.crosstab(
-        comments_df['movie'], 
-        comments_df['cluster']
-    )
-    
-    # Calculate percentages
-    cluster_percentages = cluster_distribution.div(cluster_distribution.sum(axis=1), axis=0)
-    
-    # Merge with movie data
-    if 'title' in movies_df.columns:
-        movie_key = 'title'
-    else:
-        movie_key = movies_df.columns[0]  # Assume first column is movie identifier
-    
-    cluster_revenue_data = pd.merge(
-        cluster_percentages, 
-        movies_df[[movie_key, 'revenue']], 
-        left_index=True, 
-        right_on=movie_key
-    )
-    
-    # Calculate correlation between cluster prevalence and revenue
-    correlations = {}
-    for cluster in cluster_percentages.columns:
-        if f'{cluster}' in cluster_revenue_data.columns:
-            correlation = cluster_revenue_data[f'{cluster}'].corr(cluster_revenue_data['revenue'])
-            correlations[f'Cluster {cluster}'] = correlation
-    
-    # Sort by absolute correlation
-    sorted_correlations = sorted(
-        correlations.items(), 
-        key=lambda x: abs(x[1]), 
-        reverse=True
-    )
-    
-    # Generate insights
-    insights = []
-    for cluster, corr in sorted_correlations[:3]:  # Top 3 correlations
-        direction = "positive" if corr > 0 else "negative"
-        strength = "strong" if abs(corr) > 0.5 else ("moderate" if abs(corr) > 0.3 else "weak")
-        insights.append(f"{cluster} shows a {strength} {direction} correlation ({corr:.2f}) with box office revenue")
-    
-    return {
-        "correlations": correlations,
-        "sorted_correlations": sorted_correlations,
-        "insights": insights,
-        "cluster_revenue_data": cluster_revenue_data
-    }
+    return df_with_clusters, cluster_descriptions, cluster_terms, sentiment_by_cluster

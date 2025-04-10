@@ -3,34 +3,27 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import config
+import os
 import time
 from datetime import datetime
-import os
-import shutil
+
+# Import the necessary modules
 from src.api.youtube import YouTubeClient
 from src.api.movie_db import MovieDBClient
-from src.preprocessing.clean_text import TextCleaner, clean_text_for_sentiment, clean_text_for_clustering
+from src.preprocessing.clean_text import TextCleaner, clean_text_for_sentiment
 from src.models.sentiment import SentimentAnalyzer, get_sentiment_distribution, get_top_comments
-from src.models.clustering import CommentClusterer
-from src.models.summarization import TextRankSummarizer
+from src.models.clustering import cluster_comments, create_cluster_visualization
+from src.models.summarization import summarize_by_sentiment, summarize_by_cluster
 from src.visualization.sentiment_viz import (
-    create_sentiment_bar_chart,
     create_sentiment_distribution_pie,
     create_sentiment_comparison,
     create_sentiment_heatmap,
-    create_sentiment_timeline,
-    create_model_comparison_chart
+    analyze_sentiment_revenue_correlation
 )
+from src.pipeline import run_integrated_analysis_pipeline
 
 # Import the data collection functions
 from data_collection_functions import collect_movie_dataset, process_sentiment_stats
-
-# Initialize API clients
-youtube_client = YouTubeClient()
-movie_db_client = MovieDBClient()
 
 # Set page configuration
 st.set_page_config(
@@ -81,7 +74,7 @@ if page == "Data Collection":
         col1, col2 = st.columns(2)
         
         with col1:
-            min_movies = st.number_input("Minimum Number of Movies", min_value=10, max_value=100, value=50)
+            min_movies = st.number_input("Number of Movies", min_value=10, max_value=100, value=20)
             min_comments = st.number_input("Minimum Comments per Trailer", min_value=50, max_value=500, value=100)
         
         with col2:
@@ -116,11 +109,8 @@ if page == "Data Collection":
                     save_path='data/processed'
                 )
                 
-                # Update progress bar as data is collected
-                for i in range(100):
-                    # This simulates the progress
-                    progress_bar.progress(i + 1)
-                    time.sleep(0.01)
+                # Update progress bar
+                progress_bar.progress(100)
                 
                 # Store data in session state
                 if comments_df is not None and not comments_df.empty:
@@ -132,37 +122,6 @@ if page == "Data Collection":
                     # Process sentiment stats
                     movies_with_stats = process_sentiment_stats(comments_df, movies_df)
                     st.session_state.movies_with_stats = movies_with_stats
-
-                # Add data integration validation
-                if comments_df is not None and movies_df is not None:
-                    # Integrate datasets with validation
-                    from data_collection_functions import integrate_datasets, verify_data_integration
-                    
-                    with st.spinner("Integrating and validating data..."):
-                        # Integrate datasets
-                        integrated_movies, filtered_comments = integrate_datasets(
-                            comments_df, 
-                            movies_df,
-                            min_comments=min_comments // 2  # Use half the min_comments as threshold
-                        )
-                        
-                        # Verify integration
-                        integration_valid = verify_data_integration(integrated_movies, filtered_comments)
-                        
-                        if integration_valid:
-                            # Update session state with integrated data
-                            st.session_state.movies_df = integrated_movies
-                            st.session_state.comments_df = filtered_comments
-                            st.session_state.movies_with_stats = integrated_movies  # Already has stats
-                            
-                            st.success(f"Successfully integrated data for {len(integrated_movies)} movies with {len(filtered_comments)} total comments!")
-                        else:
-                            st.warning("Data integration completed with warnings. Some movies may have insufficient data.")
-                            
-                            # Still update session state but with a warning
-                            st.session_state.movies_df = integrated_movies
-                            st.session_state.comments_df = filtered_comments
-                            st.session_state.movies_with_stats = integrated_movies
                 
                 # Show success message
                 if comments_df is not None and movies_df is not None and not movies_df.empty:
@@ -241,195 +200,117 @@ elif page == "Sentiment Analysis":
             default=available_movies[0] if len(available_movies) > 0 else None
         )
         
-        # Hide sentiment methods behind Advanced Options
-        sentiment_method = "TextBlob"  # Default method
-        
-        show_advanced = st.sidebar.checkbox("Show Advanced Options", value=False)
-        if show_advanced:
-            sentiment_method = st.sidebar.radio(
-                "Sentiment Analysis Method",
-                options=["TextBlob", "Transformer", "Compare Methods"],
-                index=0
-            )
-        
         # Filter data by selected movies
         if selected_movies:
             filtered_df = st.session_state.comments_df[st.session_state.comments_df['movie'].isin(selected_movies)]
         else:
             filtered_df = st.session_state.comments_df.copy()
         
-        # Analyze sentiment based on selected method
-        try:
-            analyzer = SentimentAnalyzer(
-                method='textblob' if sentiment_method == "TextBlob" else 'transformer'
+        # Ensure we have sentiment analysis
+        if 'sentiment' not in filtered_df.columns:
+            st.info("Running sentiment analysis...")
+            # Ensure clean text column exists
+            if 'clean_text' not in filtered_df.columns:
+                filtered_df['clean_text'] = filtered_df['text'].apply(clean_text_for_sentiment)
+            
+            # Run sentiment analysis with movie context
+            analyzer = SentimentAnalyzer()
+            sentiment_results = analyzer.analyze_sentiment(
+                filtered_df['clean_text'], 
+                movie_names=filtered_df['movie']  # Pass movie names for context
             )
+            filtered_df['sentiment'] = sentiment_results['sentiment']
+            filtered_df['polarity'] = sentiment_results['polarity']
             
-            # Container for results
-            results_container = st.container()
+            st.success("Sentiment analysis completed!")
+        
+        # Create tabs for different visualizations
+        tab1, tab2, tab3 = st.tabs(["Overall Sentiment", "Movie Comparison", "Top Comments"])
+        
+        with tab1:
+            st.subheader("Overall Sentiment Distribution")
             
-            with results_container:
-                if sentiment_method == "Compare Methods":
-                    st.subheader("Sentiment Method Comparison")
-                    
-                    # Compare different sentiment methods
-                    with st.spinner("Analyzing sentiment with multiple methods..."):
-                        # Sample data for comparison (limit to 100 comments for performance)
-                        sample_df = filtered_df.head(100)
-                        
-                        # Ensure clean text is available
-                        if 'clean_text' not in sample_df.columns:
-                            sample_df['clean_text'] = sample_df['text'].apply(clean_text_for_sentiment)
-                        
-                        comparison_results = analyzer.compare_sentiment_methods(sample_df['clean_text'])
-                        
-                        # Show model agreement chart
-                        if 'transformer_sentiment' in comparison_results.columns:
-                            agreement_chart = create_model_comparison_chart(comparison_results)
-                            st.plotly_chart(agreement_chart, use_container_width=True)
-                            
-                            # Show sample of disagreements
-                            disagreements = comparison_results[
-                                comparison_results['textblob_sentiment'] != comparison_results['transformer_sentiment']
-                            ].head(10)
-                            
-                            if not disagreements.empty:
-                                st.subheader("Sample Disagreements Between Models")
-                                for i, row in disagreements.iterrows():
-                                    st.markdown(f"**Comment:** {row['text']}")
-                                    st.markdown(f"- TextBlob: {row['textblob_sentiment']} (polarity: {row['textblob_polarity']:.2f})")
-                                    if 'transformer_rating' in row:
-                                        st.markdown(f"- Transformer: {row['transformer_sentiment']} (rating: {row['transformer_rating']})")
-                                    st.markdown("---")
-                        else:
-                            st.error("Transformer model comparison failed. Using TextBlob results only.")
-                else:
-                    # Analyze sentiment with selected method
-                    with st.spinner(f"Analyzing sentiment with {sentiment_method}..."):
-                        # Ensure clean text is available
-                        if 'clean_text' not in filtered_df.columns:
-                            filtered_df['clean_text'] = filtered_df['text'].apply(clean_text_for_sentiment)
-                        
-                        sentiment_results = analyzer.analyze_sentiment(filtered_df['clean_text'])
-                        
-                        # Add sentiment results to the dataframe
-                        if 'sentiment' in sentiment_results.columns:
-                            filtered_df['sentiment'] = sentiment_results['sentiment']
-                        
-                        # Add additional columns based on method
-                        if sentiment_method == "TextBlob" and 'polarity' in sentiment_results.columns:
-                            filtered_df['polarity'] = sentiment_results['polarity']
-                            if 'subjectivity' in sentiment_results.columns:
-                                filtered_df['subjectivity'] = sentiment_results['subjectivity']
-                        elif sentiment_method == "Transformer" and 'rating' in sentiment_results.columns:
-                            filtered_df['rating'] = sentiment_results['rating']
-                        
-                        # Create tabs for different visualizations
-                        tab1, tab2, tab3 = st.tabs(["Overall Sentiment", "Movie Comparison", "Top Comments"])
-                        
-                        with tab1:
-                            st.subheader("Overall Sentiment Distribution")
-                            
-                            # Create distribution pie chart
-                            if len(selected_movies) == 1:
-                                title = f"Sentiment Distribution for {selected_movies[0]}"
-                            else:
-                                title = "Overall Sentiment Distribution"
-                            
-                            try:
-                                pie_chart = create_sentiment_distribution_pie(filtered_df, title=title)
-                                st.plotly_chart(pie_chart, use_container_width=True)
-                            except Exception as e:
-                                st.error(f"Error creating pie chart: {str(e)}")
-                                st.dataframe(filtered_df['sentiment'].value_counts())
-                            
-                            # Additional statistics
-                            st.subheader("Sentiment Statistics")
-                            stats_col1, stats_col2, stats_col3 = st.columns(3)
-                            
-                            with stats_col1:
-                                st.metric("Total Comments", len(filtered_df))
-                            
-                            with stats_col2:
-                                positive_pct = (filtered_df['sentiment'] == 'positive').mean() * 100
-                                st.metric("Positive Sentiment", f"{positive_pct:.1f}%")
-                            
-                            with stats_col3:
-                                negative_pct = (filtered_df['sentiment'] == 'negative').mean() * 100
-                                st.metric("Negative Sentiment", f"{negative_pct:.1f}%")
-                        
-                        with tab2:
-                            if len(selected_movies) > 1:
-                                st.subheader("Movie Sentiment Comparison")
-                                
-                                try:
-                                    # Get sentiment distribution by movie
-                                    movie_sentiment = get_sentiment_distribution(filtered_df, group_by='movie')
-                                    
-                                    # Create comparison chart
-                                    comparison_chart = create_sentiment_comparison(movie_sentiment)
-                                    st.plotly_chart(comparison_chart, use_container_width=True)
-                                    
-                                    # Create heatmap
-                                    heatmap = create_sentiment_heatmap(movie_sentiment)
-                                    st.plotly_chart(heatmap, use_container_width=True)
-                                except Exception as e:
-                                    st.error(f"Error creating comparison charts: {str(e)}")
-                                    st.write("Sentiment distribution by movie:")
-                                    st.dataframe(filtered_df.groupby('movie')['sentiment'].value_counts())
-                            else:
-                                st.info("Select multiple movies in the sidebar to compare sentiment across movies.")
-                        
-                        with tab3:
-                            st.subheader("Top Comments by Sentiment")
-                            
-                            # Create columns for positive and negative comments
-                            pos_col, neg_col = st.columns(2)
-                            
-                            try:
-                                with pos_col:
-                                    st.subheader("Top Positive Comments")
-                                    top_positive = get_top_comments(filtered_df, 'positive', n=5)
-                                    for i, row in top_positive.iterrows():
-                                        st.markdown(f"**Comment:** {row['text']}")
-                                        if 'polarity' in filtered_df.columns:
-                                            pol_value = filtered_df.loc[i, 'polarity'] if i in filtered_df.index else 'N/A'
-                                            st.markdown(f"*Polarity: {pol_value if pol_value != 'N/A' else pol_value:.2f}*")
-                                        elif 'rating' in filtered_df.columns:
-                                            rating_value = filtered_df.loc[i, 'rating'] if i in filtered_df.index else 'N/A'
-                                            st.markdown(f"*Rating: {rating_value} stars*")
-                                        st.markdown("---")
-                                
-                                with neg_col:
-                                    st.subheader("Top Negative Comments")
-                                    top_negative = get_top_comments(filtered_df, 'negative', n=5)
-                                    for i, row in top_negative.iterrows():
-                                        st.markdown(f"**Comment:** {row['text']}")
-                                        if 'polarity' in filtered_df.columns:
-                                            pol_value = filtered_df.loc[i, 'polarity'] if i in filtered_df.index else 'N/A'
-                                            st.markdown(f"*Polarity: {pol_value if pol_value != 'N/A' else pol_value:.2f}*")
-                                        elif 'rating' in filtered_df.columns:
-                                            rating_value = filtered_df.loc[i, 'rating'] if i in filtered_df.index else 'N/A'
-                                            st.markdown(f"*Rating: {rating_value} stars*")
-                                        st.markdown("---")
-                                
-                                # Show neutral comments if available
-                                if 'neutral' in filtered_df['sentiment'].unique():
-                                    st.subheader("Top Neutral Comments")
-                                    top_neutral = get_top_comments(filtered_df, 'neutral', n=5)
-                                    for i, row in top_neutral.iterrows():
-                                        st.markdown(f"**Comment:** {row['text']}")
-                                        if 'polarity' in filtered_df.columns:
-                                            pol_value = filtered_df.loc[i, 'polarity'] if i in filtered_df.index else 'N/A'
-                                            st.markdown(f"*Polarity: {pol_value if pol_value != 'N/A' else pol_value:.2f}*")
-                                        elif 'rating' in filtered_df.columns:
-                                            rating_value = filtered_df.loc[i, 'rating'] if i in filtered_df.index else 'N/A'
-                                            st.markdown(f"*Rating: {rating_value} stars*")
-                                        st.markdown("---")
-                            except Exception as e:
-                                st.error(f"Error displaying top comments: {str(e)}")
-        except Exception as e:
-            st.error(f"Error in sentiment analysis: {str(e)}")
-            st.info("Try selecting a different sentiment method or check your data.")
+            # Create distribution pie chart
+            if len(selected_movies) == 1:
+                title = f"Sentiment Distribution for {selected_movies[0]}"
+            else:
+                title = "Overall Sentiment Distribution"
+            
+            pie_chart = create_sentiment_distribution_pie(filtered_df, title=title)
+            st.plotly_chart(pie_chart, use_container_width=True)
+            
+            # Additional statistics
+            st.subheader("Sentiment Statistics")
+            stats_col1, stats_col2, stats_col3 = st.columns(3)
+            
+            with stats_col1:
+                st.metric("Total Comments", len(filtered_df))
+            
+            with stats_col2:
+                positive_pct = (filtered_df['sentiment'] == 'positive').mean() * 100
+                st.metric("Positive Sentiment", f"{positive_pct:.1f}%")
+            
+            with stats_col3:
+                negative_pct = (filtered_df['sentiment'] == 'negative').mean() * 100
+                st.metric("Negative Sentiment", f"{negative_pct:.1f}%")
+        
+        with tab2:
+            if len(selected_movies) > 1:
+                st.subheader("Movie Sentiment Comparison")
+                
+                # Get sentiment distribution by movie
+                movie_sentiment = get_sentiment_distribution(filtered_df, group_by='movie')
+                
+                # Create comparison chart
+                comparison_chart = create_sentiment_comparison(movie_sentiment)
+                st.plotly_chart(comparison_chart, use_container_width=True)
+                
+                # Create heatmap
+                heatmap = create_sentiment_heatmap(movie_sentiment)
+                st.plotly_chart(heatmap, use_container_width=True)
+            else:
+                st.info("Select multiple movies in the sidebar to compare sentiment across movies.")
+        
+        with tab3:
+            st.subheader("Top Comments by Sentiment")
+            
+            # Add a note about the sentiment analysis
+            st.info("""
+            Comments are analyzed using a context-aware sentiment algorithm that understands:
+            - Movie-specific terminology and character references
+            - Slang like "fire" 🔥, "peak", "goes hard" = positive
+            - Genuine criticism vs excited references to characters/scenes
+            - Context from frequently mentioned terms in each movie
+            """)
+            
+            # Create columns for positive and negative comments
+            pos_col, neg_col = st.columns(2)
+            
+            with pos_col:
+                st.subheader("Top Positive Comments")
+                top_positive = get_top_comments(filtered_df, 'positive', n=5)
+                for i, row in top_positive.iterrows():
+                    st.markdown(f"**Comment:** {row['text']}")
+                    if 'polarity' in filtered_df.columns:
+                        # Find the correct polarity value
+                        original_row = filtered_df[filtered_df['text'] == row['text']]
+                        if not original_row.empty:
+                            pol_value = original_row['polarity'].values[0]
+                            st.markdown(f"*Polarity: {pol_value:.2f}*")
+                    st.markdown("---")
+            
+            with neg_col:
+                st.subheader("Top Negative Comments")
+                top_negative = get_top_comments(filtered_df, 'negative', n=5)
+                for i, row in top_negative.iterrows():
+                    st.markdown(f"**Comment:** {row['text']}")
+                    if 'polarity' in filtered_df.columns:
+                        # Find the correct polarity value
+                        original_row = filtered_df[filtered_df['text'] == row['text']]
+                        if not original_row.empty:
+                            pol_value = original_row['polarity'].values[0]
+                            st.markdown(f"*Polarity: {pol_value:.2f}*")
+                    st.markdown("---")
 
 elif page == "Comment Clusters":
     st.header("Comment Clusters")
@@ -438,9 +319,6 @@ elif page == "Comment Clusters":
     if 'comments_df' not in st.session_state or st.session_state.comments_df is None:
         st.warning("No data available. Please collect data in the Data Collection page.")
     else:
-        # Rest of the Comment Clusters code...
-        # (This is a placeholder to keep the artifact size manageable)
-        
         # Load comments data
         comments_df = st.session_state.comments_df
         
@@ -456,17 +334,184 @@ elif page == "Comment Clusters":
         )
         
         # Number of clusters
-        n_clusters = st.sidebar.slider("Number of Clusters", min_value=2, max_value=10, value=5)
+        n_clusters = st.sidebar.slider("Number of Clusters", min_value=3, max_value=8, value=5)
+        
+        # Include sentiment in clustering
+        include_sentiment = st.sidebar.checkbox("Use Sentiment in Clustering", value=True,
+                                             help="Include sentiment as a feature in clustering")
         
         # Filter data by selected movies
         if selected_movies:
             filtered_df = comments_df[comments_df['movie'].isin(selected_movies)]
+            
+            # Ensure clean text column exists
+            if 'clean_text' not in filtered_df.columns:
+                filtered_df['clean_text'] = filtered_df['text'].apply(clean_text_for_sentiment)
+            
+            # Run clustering
+            with st.spinner("Analyzing comment themes..."):
+                df_with_clusters, cluster_descriptions, cluster_terms, sentiment_by_cluster = cluster_comments(
+                    filtered_df, text_column='clean_text', n_clusters=n_clusters, include_sentiment=include_sentiment
+                )
+            
+            # Display theme counts and description
+            st.subheader("Comment Themes")
+            
+            # Introduction text
+            st.markdown("""
+            The comments are automatically grouped into themes based on content and language patterns.
+            Each theme represents a different type of audience reaction or discussion topic.
+            """)
+            
+            # Get cluster visualization data
+            cluster_viz = create_cluster_visualization(df_with_clusters, theme_mapping=cluster_descriptions)
+            
+            # Create bar chart with shortened labels
+            fig = px.bar(
+                x=cluster_viz['short_labels'],  # Use short labels here!
+                y=cluster_viz['counts'].values,
+                labels={"x": "Theme", "y": "Comment Count"},
+                title="Comment Themes Distribution",
+                color=cluster_viz['counts'].values,
+                color_continuous_scale="Viridis",
+                text=cluster_viz['counts'].values
+            )
+            
+            # Update layout
+            fig.update_layout(
+                xaxis_tickangle=-30,  # Reduced angle for better readability
+                showlegend=False,
+                height=500
+            )
+            
+            # Display the chart
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Create tabs for different views
+            tab1, tab2 = st.tabs(["Theme Descriptions", "Sentiment by Theme"])
+            
+            with tab1:
+                # Display theme descriptions
+                for cluster_id, description in cluster_descriptions.items():
+                    with st.expander(description, expanded=False):
+                        # Show top terms
+                        st.markdown(f"**Top terms:** {', '.join(cluster_terms[cluster_id])}")
+                        
+                        # Show sample comments
+                        st.markdown("**Sample Comments:**")
+                        sample_comments = df_with_clusters[df_with_clusters['cluster'] == cluster_id]['text'].sample(min(3, len(df_with_clusters[df_with_clusters['cluster'] == cluster_id]))).tolist()
+                        
+                        for i, comment in enumerate(sample_comments):
+                            st.markdown(f"{i+1}. {comment}")
+            
+            with tab2:
+                # Show sentiment distribution by cluster
+                if sentiment_by_cluster is not None:
+                    # Create a heatmap for sentiment distribution
+                    # Prepare the data
+                    sentiment_df = sentiment_by_cluster.reset_index()
+                    sentiment_df['Cluster'] = sentiment_df['cluster'].apply(
+                        lambda x: cluster_viz['short_labels'][list(cluster_viz['counts'].index).index(x)]
+                        if x in cluster_viz['counts'].index else f"Cluster {x}"
+                    )
+                    
+                    # Melt the dataframe for plotting
+                    sentiment_plot_data = pd.melt(
+                        sentiment_df, 
+                        id_vars=['Cluster'], 
+                        value_vars=['positive', 'negative', 'neutral'] if all(col in sentiment_df.columns for col in ['positive', 'negative', 'neutral']) else sentiment_df.columns[1:],
+                        var_name='Sentiment', 
+                        value_name='Proportion'  # Changed from 'Percentage'
+                    )
+                    
+                    # Create the heatmap
+                    fig = px.density_heatmap(
+                        sentiment_plot_data,
+                        x='Sentiment',
+                        y='Cluster',
+                        z='Proportion',
+                        title="Sentiment Distribution by Theme",
+                        color_continuous_scale=[
+                            [0, '#FFFFFF'],
+                            [0.5, '#ABDDA4'],
+                            [1, '#2ecc71']
+                        ],
+                        text_auto=True
+                    )
+                    
+                    # Update layout
+                    fig.update_layout(
+                        xaxis_title="Sentiment Category",
+                        yaxis_title="Theme",
+                        coloraxis_colorbar_title="Proportion"  # Changed from 'Percentage'
+                    )
+                    
+                    # Display the heatmap
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Show insight about the dominant sentiment for each cluster
+                    st.subheader("Theme Insights")
+                    
+                    for cluster_id in sentiment_by_cluster.index:
+                        row = sentiment_by_cluster.loc[cluster_id]
+                        dominant_sentiment = row.idxmax()
+                        
+                        # Use emoji based on sentiment
+                        if dominant_sentiment == 'positive':
+                            emoji = "✅"
+                            color = "green"
+                        elif dominant_sentiment == 'negative':
+                            emoji = "❌"
+                            color = "red"
+                        else:
+                            emoji = "⚠️"
+                            color = "orange"
+                        
+                        st.markdown(
+                            f"{emoji} **{cluster_descriptions[cluster_id]}** - "
+                            f"<span style='color:{color}'>{dominant_sentiment.title()}</span>",
+                            unsafe_allow_html=True
+                        )
+                else:
+                    st.info("Sentiment data not available for clusters.")
+                    
+            # Generate themes summary
+            st.subheader("Audience Reaction Summary")
+            
+            # Count comments in each cluster/theme
+            theme_comment_counts = df_with_clusters['cluster'].value_counts()
+            total_comments = len(df_with_clusters)
+            
+            # Top themes (>10% of comments)
+            main_themes = [(cluster_id, count) for cluster_id, count in theme_comment_counts.items() 
+                         if count / total_comments >= 0.1]
+            
+            if main_themes:
+                theme_insights = []
+                
+                for cluster_id, count in main_themes:
+                    percentage = count / total_comments * 100
+                    
+                    # Get sentiment if available
+                    sentiment_info = ""
+                    if sentiment_by_cluster is not None and cluster_id in sentiment_by_cluster.index:
+                        row = sentiment_by_cluster.loc[cluster_id]
+                        dominant_sentiment = row.idxmax()
+                        sentiment_info = f" with {dominant_sentiment} sentiment"
+                    
+                    # Get the theme name but without the terms list
+                    theme_full = cluster_descriptions.get(cluster_id, f"Cluster {cluster_id}")
+                    theme_name = theme_full.split(':')[0] if ':' in theme_full else theme_full
+                    
+                    theme_insights.append(
+                        f"- **{theme_name}** represents {percentage:.1f}% of audience comments{sentiment_info}."
+                    )
+                
+                st.markdown("\n".join(theme_insights))
+            else:
+                st.info("No major themes found. Try adjusting the number of clusters.")
         else:
-            filtered_df = comments_df.copy()
-        
-        # Clustering logic...
-        # (Rest of clustering functionality would go here)
-        st.info("Select movies from the sidebar to begin clustering analysis")
+            st.info("Select movies from the sidebar to begin clustering analysis")
 
 elif page == "Summaries":
     st.header("Comment Summarization")
@@ -475,9 +520,6 @@ elif page == "Summaries":
     if 'comments_df' not in st.session_state or st.session_state.comments_df is None:
         st.warning("No data available. Please collect data in the Data Collection page.")
     else:
-        # Rest of the Summaries code...
-        # (This is a placeholder to keep the artifact size manageable)
-        
         # Load comments data
         comments_df = st.session_state.comments_df
         
@@ -492,14 +534,83 @@ elif page == "Summaries":
             index=0 if len(available_movies) > 0 else None
         )
         
-        # Summarization logic...
-        # (Rest of summarization functionality would go here)
-        st.info("Select a movie from the sidebar to generate summaries")
+        if selected_movie:
+            # Filter comments for selected movie
+            movie_comments = comments_df[comments_df['movie'] == selected_movie]
+            
+            # Ensure clean text column exists
+            if 'clean_text' not in movie_comments.columns:
+                movie_comments['clean_text'] = movie_comments['text'].apply(clean_text_for_sentiment)
+            
+            # Ensure sentiment column exists
+            if 'sentiment' not in movie_comments.columns:
+                analyzer = SentimentAnalyzer()
+                sentiment_results = analyzer.analyze_sentiment(movie_comments['clean_text'])
+                movie_comments['sentiment'] = sentiment_results['sentiment']
+            
+            # Create tabs for different summarization approaches
+            tab1, tab2 = st.tabs(["Sentiment Summaries", "Cluster Summaries"])
+            
+            with tab1:
+                st.subheader(f"Sentiment-based Summaries for {selected_movie}")
+                
+                # Generate summaries by sentiment
+                with st.spinner("Generating sentiment summaries..."):
+                    sentiment_summaries = summarize_by_sentiment(
+                        movie_comments, text_column='clean_text', sentiment_column='sentiment'
+                    )
+                
+                # Display summaries
+                if 'positive' in sentiment_summaries:
+                    st.subheader("Positive Comments Summary")
+                    st.write(sentiment_summaries['positive'])
+                
+                if 'negative' in sentiment_summaries:
+                    st.subheader("Negative Comments Summary")
+                    st.write(sentiment_summaries['negative'])
+                
+                if 'neutral' in sentiment_summaries:
+                    st.subheader("Neutral Comments Summary")
+                    st.write(sentiment_summaries['neutral'])
+            
+            with tab2:
+                st.subheader(f"Cluster-based Summaries for {selected_movie}")
+                
+                # Check if clustering has been done
+                if 'cluster' not in movie_comments.columns:
+                    # Run clustering
+                    with st.spinner("Clustering comments..."):
+                        df_with_clusters, cluster_descriptions, cluster_terms, _ = cluster_comments(
+                            movie_comments, text_column='clean_text', n_clusters=5
+                        )
+                else:
+                    df_with_clusters = movie_comments
+                    
+                    # Generate or retrieve cluster descriptions
+                    if 'cluster_descriptions' in st.session_state:
+                        cluster_descriptions = st.session_state.cluster_descriptions
+                    else:
+                        # Simple default descriptions
+                        cluster_descriptions = {i: f"Cluster {i}" for i in df_with_clusters['cluster'].unique()}
+                
+                # Generate summaries by cluster
+                with st.spinner("Generating cluster summaries..."):
+                    cluster_summaries = summarize_by_cluster(
+                        df_with_clusters, text_column='clean_text', 
+                        cluster_column='cluster', cluster_descriptions=cluster_descriptions
+                    )
+                
+                # Display summaries
+                for cluster_id, summary in cluster_summaries.items():
+                    with st.expander(f"Cluster {cluster_id} Summary"):
+                        st.write(summary)
+        else:
+            st.info("Select a movie from the sidebar to generate summaries")
 
 elif page == "Box Office Insights":
     st.header("Box Office Prediction Insights")
     
-    # Check if data is available and properly integrated
+    # Check if data is available
     if ('comments_df' not in st.session_state or 
         st.session_state.comments_df is None or 
         'movies_df' not in st.session_state or 
@@ -513,7 +624,6 @@ elif page == "Box Office Insights":
             movies_df = st.session_state.movies_df
             
             # Run the analysis pipeline
-            from src.pipeline import run_integrated_analysis_pipeline
             pipeline_results = run_integrated_analysis_pipeline(comments_df, movies_df)
             
             # Store updated dataframes in session state
@@ -531,167 +641,61 @@ elif page == "Box Office Insights":
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            st.metric("Total Movies", metrics["total_movies"])
+            st.metric("Total Movies", metrics.get("total_movies", 0))
         
         with col2:
-            st.metric("Total Comments", f"{metrics['total_comments']:,}")
+            st.metric("Total Comments", f"{metrics.get('total_comments', 0):,}")
         
         with col3:
-            st.metric("Positive Comments", f"{metrics['positive_pct']:.1f}%")
+            st.metric("Positive Comments", f"{metrics.get('positive_pct', 0):.1f}%")
         
         with col4:
-            correlation_metric = metrics.get("top_correlation_metric", "N/A")
-            correlation_value = metrics.get("top_correlation_value", 0)
-            st.metric("Top Correlation", f"{correlation_value:.2f}", 
-                      help=f"Correlation between {correlation_metric} and revenue")
+            r_squared = metrics.get("sentiment_correlation", 0)
+            st.metric("Sentiment-Revenue R²", f"{r_squared:.2f}")
         
         # Create tabs for visualizations and insights
-        tab1, tab2, tab3 = st.tabs(["Sentiment-Revenue Analysis", "Cluster Analysis", "Predictive Insights"])
+        tab1, tab2 = st.tabs(["Sentiment-Revenue Analysis", "Cluster Analysis"])
         
         with tab1:
             st.subheader("Sentiment Impact on Box Office Performance")
             
-            # Show key insights
-            insights = pipeline_results['correlation_results'].get('insights', [])
-            for insight in insights:
-                st.info(insight)
-            
-            # Show sentiment correlation visualization
-            st.plotly_chart(
-                pipeline_results['visualizations'].get('prediction_model', None),
-                use_container_width=True
-            )
-            
-            # Show genre correlations if available
-            if 'genre_correlation' in pipeline_results['visualizations']:
-                st.subheader("Sentiment-Revenue Correlation by Genre")
+            # Show correlation visualization
+            if "correlation_results" in pipeline_results and "scatter_plot" in pipeline_results["correlation_results"]:
                 st.plotly_chart(
-                    pipeline_results['visualizations']['genre_correlation'],
+                    pipeline_results["correlation_results"]["scatter_plot"],
                     use_container_width=True
                 )
+                
+                # Show correlation values
+                if "correlations" in pipeline_results["correlation_results"]:
+                    correlations = pipeline_results["correlation_results"]["correlations"]
+                    st.subheader("Sentiment-Revenue Correlations")
+                    
+                    corr_df = pd.DataFrame({
+                        "Metric": list(correlations.keys()),
+                        "Correlation": list(correlations.values())
+                    })
+                    st.dataframe(corr_df)
+            else:
+                st.info("No correlation analysis available. Make sure movies have revenue data.")
         
         with tab2:
-            st.subheader("Audience Reaction Clusters")
+            st.subheader("Cluster Analysis")
             
-            # Show cluster distribution
-            st.plotly_chart(
-                pipeline_results['visualizations'].get('cluster_bar', None),
-                use_container_width=True
-            )
-            
-            # Show cluster insights
-            st.subheader("Cluster Impact on Box Office")
-            
-            # Get cluster insights
-            cluster_insights = pipeline_results['cluster_correlation_results'].get('insights', [])
-            for insight in cluster_insights:
-                st.info(insight)
-            
-            # Display summaries for each cluster
-            st.subheader("Audience Reaction Themes")
-            
-            formatted_insights = pipeline_results.get('formatted_insights', {})
-            for cluster_id, insight in formatted_insights.items():
-                with st.expander(f"Theme {cluster_id}"):
-                    st.markdown(insight)
-        
-        with tab3:
-            st.subheader("Movie Revenue Prediction")
-            
-            # Create simple prediction form
-            st.markdown("### Predict Box Office Performance")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                positive_pct = st.slider("Positive Comment %", 0, 100, 50)
-                negative_pct = st.slider("Negative Comment %", 0, 100, 20)
+            # Show cluster distributions
+            if "cluster_descriptions" in pipeline_results:
+                # Display cluster descriptions
+                st.subheader("Cluster Themes")
                 
-                # Ensure percentages add up to 100
-                neutral_pct = 100 - positive_pct - negative_pct
-                st.write(f"Neutral Comment %: {neutral_pct}%")
+                for cluster_id, description in pipeline_results["cluster_descriptions"].items():
+                    st.write(f"**Cluster {cluster_id}:** {description}")
                 
-                # Calculate polarity (simplified)
-                polarity = (positive_pct - negative_pct) / 100
-                st.write(f"Calculated Sentiment Polarity: {polarity:.2f}")
-            
-            with col2:
-                # Get top clusters
-                top_clusters = pipeline_results['cluster_correlation_results'].get('sorted_correlations', [])
-                if top_clusters:
-                    # Get the top positive and negative correlated clusters
-                    positive_clusters = [c for c, v in top_clusters if v > 0][:2]
-                    negative_clusters = [c for c, v in top_clusters if v < 0][:2]
+                # Display cluster summaries
+                if "cluster_summaries" in pipeline_results:
+                    st.subheader("Cluster Summaries")
                     
-                    if positive_clusters:
-                        st.write("### Recommended Comment Themes")
-                        for cluster in positive_clusters:
-                            cluster_id = cluster.replace("Cluster ", "")
-                            if cluster_id.isdigit():
-                                cluster_id = int(cluster_id)
-                                if cluster_id in pipeline_results['clustering_results'].get('cluster_descriptions', {}):
-                                    st.success(f"✓ {pipeline_results['clustering_results']['cluster_descriptions'][cluster_id]}")
-                    
-                    if negative_clusters:
-                        st.write("### Comment Themes to Avoid")
-                        for cluster in negative_clusters:
-                            cluster_id = cluster.replace("Cluster ", "")
-                            if cluster_id.isdigit():
-                                cluster_id = int(cluster_id)
-                                if cluster_id in pipeline_results['clustering_results'].get('cluster_descriptions', {}):
-                                    st.error(f"✗ {pipeline_results['clustering_results']['cluster_descriptions'][cluster_id]}")
-            
-            # Make a simple prediction based on the model
-            correlation_results = pipeline_results['correlation_results']
-            if 'data' in correlation_results:
-                data = correlation_results['data']
-                
-                from scipy import stats
-                import numpy as np
-                
-                # Build simple linear regression model
-                x = data['avg_polarity']
-                y = data['revenue']
-                
-                slope, intercept, r_value, p_value, std_err = stats.linregress(x, y)
-                
-                # Predict revenue
-                predicted_revenue = slope * polarity + intercept
-                
-                # Format with appropriate units
-                if predicted_revenue >= 1e9:
-                    formatted_revenue = f"${predicted_revenue/1e9:.2f} billion"
-                else:
-                    formatted_revenue = f"${predicted_revenue/1e6:.2f} million"
-                
-                # Display prediction with confidence interval
-                st.subheader("Predicted Box Office Revenue")
-                st.markdown(f"### {formatted_revenue}")
-                
-                # Calculate confidence interval
-                # This is a simplified approach
-                confidence = 0.9  # 90% confidence interval
-                n = len(x)
-                t_critical = stats.t.ppf((1 + confidence) / 2, n - 2)
-                std_error = std_err * np.sqrt(1 + 1/n + (polarity - np.mean(x))**2 / np.sum((x - np.mean(x))**2))
-                margin_of_error = t_critical * std_error
-                
-                lower_bound = predicted_revenue - margin_of_error
-                upper_bound = predicted_revenue + margin_of_error
-                
-                # Format confidence interval
-                if lower_bound >= 1e9:
-                    lower_formatted = f"${lower_bound/1e9:.2f} billion"
-                else:
-                    lower_formatted = f"${lower_bound/1e6:.2f} million"
-                    
-                if upper_bound >= 1e9:
-                    upper_formatted = f"${upper_bound/1e9:.2f} billion"
-                else:
-                    upper_formatted = f"${upper_bound/1e6:.2f} million"
-                
-                st.write(f"90% Confidence Interval: {lower_formatted} to {upper_formatted}")
-                st.write(f"Model R² = {r_value**2:.2f}, p-value = {p_value:.4f}")
-                
-                if r_value**2 < 0.3:
-                    st.warning("This model has limited predictive power. Use with caution.")
+                    for cluster_id, summary in pipeline_results["cluster_summaries"].items():
+                        with st.expander(f"Cluster {cluster_id} Summary"):
+                            st.write(summary)
+            else:
+                st.info("No cluster analysis available.")

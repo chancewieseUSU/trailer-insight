@@ -138,13 +138,15 @@ def collect_movie_dataset(min_movies=50, min_comments=100, include_box_office=Tr
             print(f"  - Cleaning and processing comments...")
             text_cleaner = TextCleaner()
             comments_df['clean_text'] = comments_df['text'].apply(clean_text_for_sentiment)
-            
+
             # Add sentiment analysis
-            analyzer = SentimentAnalyzer(method='textblob')
-            sentiment_results = analyzer.analyze_sentiment(comments_df['clean_text'])
+            analyzer = SentimentAnalyzer()
+            sentiment_results = analyzer.analyze_sentiment(
+                comments_df['clean_text'],
+                movie_names=comments_df['movie']  # Pass movie names for context
+            )
             comments_df['sentiment'] = sentiment_results['sentiment']
             comments_df['polarity'] = sentiment_results['polarity']
-            comments_df['subjectivity'] = sentiment_results['subjectivity']
             
             # Add to collection
             all_comments.append(comments_df)
@@ -199,8 +201,6 @@ def collect_movie_dataset(min_movies=50, min_comments=100, include_box_office=Tr
                 # Save collected data so far
                 tmp_comments_df = pd.concat(all_comments, ignore_index=True) if all_comments else pd.DataFrame()
                 tmp_movies_df = pd.DataFrame(all_movies) if all_movies else pd.DataFrame()
-                
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M')
                 
                 # Save the temporary results
                 tmp_comments_df.to_csv(f"{save_path}/comments_processed_partial.csv", index=False)
