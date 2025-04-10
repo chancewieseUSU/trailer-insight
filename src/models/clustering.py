@@ -1,3 +1,4 @@
+# src/models/clustering.py
 import numpy as np
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -358,3 +359,172 @@ class CommentClusterer:
         except Exception as e:
             print(f"Error loading model: {e}")
             return None
+
+def enhance_clustering(comments_df, n_clusters=6):
+    """
+    Enhance clustering implementation with meaningful labels and analysis.
+    
+    Parameters:
+    comments_df (DataFrame): DataFrame with comment data
+    n_clusters (int): Number of clusters
+    
+    Returns:
+    dict: Dict with clustering results, labels, and analysis
+    """
+    from src.preprocessing.clean_text import clean_text_for_clustering
+    import pandas as pd
+    
+    # Ensure we have clean text for clustering
+    if 'clean_text' not in comments_df.columns:
+        comments_df['clustering_text'] = comments_df['text'].apply(clean_text_for_clustering)
+    else:
+        comments_df['clustering_text'] = comments_df['clean_text']
+    
+    # Initialize and fit clusterer
+    clusterer = CommentClusterer(n_clusters=n_clusters)
+    clusterer.fit(comments_df['clustering_text'])
+    
+    # Get cluster assignments
+    cluster_labels = clusterer.predict(comments_df['clustering_text'])
+    comments_df['cluster'] = cluster_labels
+    
+    # Get top terms per cluster
+    cluster_terms = clusterer.get_top_terms_per_cluster(n_terms=10)
+    
+    # Generate meaningful cluster labels
+    cluster_descriptions = {}
+    for cluster_id, terms in cluster_terms.items():
+        # Use the top 3 terms to generate a descriptive label
+        top_terms = terms[:3]
+        
+        # Define common themes based on top terms
+        theme_patterns = {
+            'acting': ['actor', 'actress', 'performance', 'cast', 'acting'],
+            'visual': ['visual', 'effects', 'cgi', 'beautiful', 'cinematography', 'scene'],
+            'story': ['story', 'plot', 'narrative', 'writing', 'screenplay'],
+            'excitement': ['excited', 'cant wait', 'amazing', 'awesome', 'great', 'love'],
+            'criticism': ['bad', 'worst', 'terrible', 'awful', 'hate', 'boring'],
+            'comparison': ['better', 'worse', 'original', 'sequel', 'previous', 'first'],
+            'character': ['character', 'protagonist', 'villain', 'hero'],
+            'director': ['director', 'filmmaker', 'directed']
+        }
+        
+        # Check which themes are present in the terms
+        themes = []
+        for theme, patterns in theme_patterns.items():
+            if any(term in patterns for term in terms) or any(pattern in ' '.join(terms) for pattern in patterns):
+                themes.append(theme)
+        
+        # Create label based on themes and top terms
+        if themes:
+            cluster_descriptions[cluster_id] = f"{'/'.join(themes)} ({', '.join(top_terms[:3])})"
+        else:
+            cluster_descriptions[cluster_id] = f"Cluster {cluster_id}: {', '.join(top_terms[:3])}"
+    
+    # Analyze sentiment distribution by cluster
+    sentiment_by_cluster = pd.crosstab(
+        comments_df['cluster'], 
+        comments_df['sentiment'] if 'sentiment' in comments_df.columns else pd.Series('unknown', index=comments_df.index),
+        normalize='index'
+    )
+    
+    # Identify dominant sentiment for each cluster
+    cluster_sentiments = {}
+    for cluster_id in range(n_clusters):
+        if cluster_id in sentiment_by_cluster.index:
+            if 'positive' in sentiment_by_cluster.columns and 'negative' in sentiment_by_cluster.columns:
+                pos_pct = sentiment_by_cluster.loc[cluster_id, 'positive']
+                neg_pct = sentiment_by_cluster.loc[cluster_id, 'negative']
+                
+                if pos_pct > 0.6:
+                    sentiment = "Strongly Positive"
+                elif pos_pct > 0.4:
+                    sentiment = "Moderately Positive"
+                elif neg_pct > 0.6:
+                    sentiment = "Strongly Negative"
+                elif neg_pct > 0.4:
+                    sentiment = "Moderately Negative"
+                else:
+                    sentiment = "Mixed/Neutral"
+                
+                cluster_sentiments[cluster_id] = sentiment
+    
+    # Combine sentiment with descriptions
+    for cluster_id, description in cluster_descriptions.items():
+        if cluster_id in cluster_sentiments:
+            cluster_descriptions[cluster_id] = f"{description} - {cluster_sentiments[cluster_id]}"
+    
+    return {
+        "cluster_terms": cluster_terms,
+        "cluster_descriptions": cluster_descriptions,
+        "sentiment_by_cluster": sentiment_by_cluster,
+        "comments_df": comments_df
+    }
+
+def analyze_cluster_revenue_correlation(comments_df, movies_df):
+    """
+    Analyze which comment clusters correlate best with box office success.
+    
+    Parameters:
+    comments_df (DataFrame): DataFrame with comment data including clusters
+    movies_df (DataFrame): DataFrame with movie data including revenue
+    
+    Returns:
+    dict: Dictionary with cluster-revenue correlation results
+    """
+    import pandas as pd
+    import numpy as np
+    
+    # Ensure we have cluster assignments
+    if 'cluster' not in comments_df.columns:
+        return {"error": "Comments DataFrame doesn't have cluster assignments"}
+    
+    # Calculate cluster distribution per movie
+    cluster_distribution = pd.crosstab(
+        comments_df['movie'], 
+        comments_df['cluster']
+    )
+    
+    # Calculate percentages
+    cluster_percentages = cluster_distribution.div(cluster_distribution.sum(axis=1), axis=0)
+    
+    # Merge with movie data
+    if 'title' in movies_df.columns:
+        movie_key = 'title'
+    else:
+        movie_key = movies_df.columns[0]  # Assume first column is movie identifier
+    
+    cluster_revenue_data = pd.merge(
+        cluster_percentages, 
+        movies_df[[movie_key, 'revenue']], 
+        left_index=True, 
+        right_on=movie_key
+    )
+    
+    # Calculate correlation between cluster prevalence and revenue
+    correlations = {}
+    for cluster in cluster_percentages.columns:
+        if f'{cluster}' in cluster_revenue_data.columns:
+            correlation = cluster_revenue_data[f'{cluster}'].corr(cluster_revenue_data['revenue'])
+            correlations[f'Cluster {cluster}'] = correlation
+    
+    # Sort by absolute correlation
+    sorted_correlations = sorted(
+        correlations.items(), 
+        key=lambda x: abs(x[1]), 
+        reverse=True
+    )
+    
+    # Generate insights
+    insights = []
+    for cluster, corr in sorted_correlations[:3]:  # Top 3 correlations
+        direction = "positive" if corr > 0 else "negative"
+        strength = "strong" if abs(corr) > 0.5 else ("moderate" if abs(corr) > 0.3 else "weak")
+        insights.append(f"{cluster} shows a {strength} {direction} correlation ({corr:.2f}) with box office revenue")
+    
+    return {
+        "correlations": correlations,
+        "sorted_correlations": sorted_correlations,
+        "insights": insights,
+        "cluster_revenue_data": cluster_revenue_data
+    }

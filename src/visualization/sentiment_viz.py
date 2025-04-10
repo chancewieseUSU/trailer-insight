@@ -396,3 +396,205 @@ def create_model_comparison_chart(comparison_data, title="Sentiment Model Compar
         print(f"Error creating model comparison chart: {e}")
         # Return empty figure as fallback
         return go.Figure().update_layout(title=f"Error: {str(e)}")
+
+def analyze_sentiment_revenue_correlation(movies_df):
+    """
+    Perform advanced correlation analysis between sentiment metrics and box office performance.
+    
+    Parameters:
+    movies_df (DataFrame): DataFrame with movie and sentiment data
+    
+    Returns:
+    dict: Dictionary with correlation results and insights
+    """
+    # Ensure we have the necessary columns
+    required_cols = ['revenue', 'avg_polarity', 'positive_pct', 'negative_pct']
+    if not all(col in movies_df.columns for col in required_cols):
+        return {"error": "Missing required columns for correlation analysis"}
+    
+    # Filter out movies with missing revenue data
+    valid_movies = movies_df[movies_df['revenue'] > 0].copy()
+    
+    # Calculate correlations
+    correlations = {}
+    for metric in ['avg_polarity', 'positive_pct', 'negative_pct', 'comment_count']:
+        if metric in valid_movies.columns:
+            correlations[metric] = valid_movies[metric].corr(valid_movies['revenue'])
+    
+    # Identify top positive and negative correlators
+    sorted_corrs = sorted(correlations.items(), key=lambda x: abs(x[1]), reverse=True)
+    
+    # Group by genre if available
+    genre_correlations = {}
+    if 'genres' in valid_movies.columns:
+        # Extract all unique genres
+        all_genres = set()
+        for genres_str in valid_movies['genres'].dropna():
+            genres = [g.strip() for g in genres_str.split(',')]
+            all_genres.update(genres)
+        
+        # Calculate correlation by genre
+        for genre in all_genres:
+            genre_movies = valid_movies[valid_movies['genres'].str.contains(genre, na=False)]
+            if len(genre_movies) >= 5:  # Only consider genres with enough samples
+                genre_corr = genre_movies['avg_polarity'].corr(genre_movies['revenue'])
+                genre_correlations[genre] = genre_corr
+    
+    # Generate insights
+    insights = []
+    
+    # Overall correlation insight
+    top_metric, top_corr = sorted_corrs[0] if sorted_corrs else (None, 0)
+    if abs(top_corr) > 0.3:
+        direction = "positive" if top_corr > 0 else "negative"
+        insights.append(f"There is a {direction} correlation ({top_corr:.2f}) between {top_metric} and box office revenue")
+    else:
+        insights.append("No strong correlations found between sentiment metrics and revenue")
+    
+    # Genre-specific insights
+    if genre_correlations:
+        # Find genre with strongest correlation
+        top_genre, top_genre_corr = max(genre_correlations.items(), key=lambda x: abs(x[1]), default=(None, 0))
+        if top_genre and abs(top_genre_corr) > 0.4:
+            direction = "positive" if top_genre_corr > 0 else "negative"
+            insights.append(f"{top_genre} movies show a strong {direction} correlation ({top_genre_corr:.2f}) between sentiment and revenue")
+    
+    return {
+        "correlations": correlations,
+        "genre_correlations": genre_correlations,
+        "insights": insights,
+        "data": valid_movies
+    }
+
+def create_enhanced_sentiment_visualizations(correlation_results):
+    """
+    Create enhanced visualizations for sentiment-revenue relationship.
+    
+    Parameters:
+    correlation_results (dict): Results from analyze_sentiment_revenue_correlation
+    
+    Returns:
+    dict: Dictionary with plotly figures
+    """
+    import plotly.express as px
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+    import numpy as np
+    from scipy import stats
+    
+    figures = {}
+    
+    # Get the data
+    if "error" in correlation_results or "data" not in correlation_results:
+        return {"error": "Invalid correlation results"}
+    
+    data = correlation_results["data"]
+    
+    # 1. Create advanced scatter plot with trend line
+    if 'avg_polarity' in data.columns and 'revenue' in data.columns:
+        # Create scatter plot
+        fig = px.scatter(
+            data, 
+            x='avg_polarity', 
+            y='revenue',
+            size='comment_count' if 'comment_count' in data.columns else None,
+            color='positive_pct' if 'positive_pct' in data.columns else None,
+            hover_data=['title', 'comment_count', 'positive_pct', 'negative_pct'],
+            labels={
+                'avg_polarity': 'Sentiment Polarity',
+                'revenue': 'Box Office Revenue ($)',
+                'positive_pct': 'Positive Comments (%)'
+            },
+            title="Sentiment Polarity vs. Box Office Revenue"
+        )
+        
+        # Add regression line
+        x = data['avg_polarity']
+        y = data['revenue']
+        
+        # Calculate regression line
+        slope, intercept, r_value, p_value, std_err = stats.linregress(x, y)
+        
+        # Add regression line to plot
+        x_range = np.linspace(x.min(), x.max(), 100)
+        y_range = slope * x_range + intercept
+        
+        fig.add_trace(
+            go.Scatter(
+                x=x_range,
+                y=y_range,
+                mode='lines',
+                name=f'Trend (R²={r_value**2:.2f})',
+                line=dict(color='red', dash='dash')
+            )
+        )
+        
+        # Improve layout
+        fig.update_layout(
+            template="plotly_white",
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            )
+        )
+        
+        figures["scatter_plot"] = fig
+    
+    # 2. Create correlation heatmap
+    correlations = correlation_results.get("correlations", {})
+    if correlations:
+        corr_items = list(correlations.items())
+        metrics = [item[0] for item in corr_items]
+        values = [item[1] for item in corr_items]
+        
+        fig = go.Figure(data=go.Bar(
+            x=metrics,
+            y=values,
+            marker_color=[
+                'green' if v > 0.1 else ('red' if v < -0.1 else 'gray') 
+                for v in values
+            ]
+        ))
+        
+        fig.update_layout(
+            title="Correlation with Box Office Revenue",
+            xaxis_title="Metric",
+            yaxis_title="Correlation Coefficient",
+            template="plotly_white"
+        )
+        
+        figures["correlation_bar"] = fig
+    
+    # 3. Create genre correlation visualization
+    genre_correlations = correlation_results.get("genre_correlations", {})
+    if genre_correlations:
+        genres = list(genre_correlations.keys())
+        corr_values = list(genre_correlations.values())
+        
+        # Sort by absolute correlation
+        sorted_indices = sorted(range(len(corr_values)), key=lambda i: abs(corr_values[i]), reverse=True)
+        sorted_genres = [genres[i] for i in sorted_indices[:10]]  # Top 10 genres
+        sorted_values = [corr_values[i] for i in sorted_indices[:10]]
+        
+        fig = go.Figure(data=go.Bar(
+            x=sorted_genres,
+            y=sorted_values,
+            marker_color=[
+                'green' if v > 0.1 else ('red' if v < -0.1 else 'gray') 
+                for v in sorted_values
+            ]
+        ))
+        
+        fig.update_layout(
+            title="Sentiment-Revenue Correlation by Genre",
+            xaxis_title="Genre",
+            yaxis_title="Correlation Coefficient",
+            template="plotly_white"
+        )
+        
+        figures["genre_correlation"] = fig
+    
+    return figures

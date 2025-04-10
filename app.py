@@ -506,285 +506,192 @@ elif page == "Box Office Insights":
         st.session_state.movies_df is None):
         st.warning("No data available. Please collect data in the Data Collection page.")
     else:
-        st.info("This section connects comment sentiment to box office performance.")
-        
-        # Use the integrated movies dataframe with sentiment stats
-        if 'movies_with_stats' in st.session_state:
-            movies_df = st.session_state.movies_with_stats
-        else:
+        # Run the integrated analysis pipeline
+        with st.spinner("Analyzing data... This may take a moment."):
+            # Get data from session state
+            comments_df = st.session_state.comments_df
             movies_df = st.session_state.movies_df
             
-            # Check if we need to calculate sentiment stats
-            if 'avg_sentiment' not in movies_df.columns:
-                st.warning("Sentiment statistics not found. Re-calculating now...")
-                
-                try:
-                    from data_collection_functions import calculate_movie_sentiment_stats
-                    movies_df = calculate_movie_sentiment_stats(
-                        st.session_state.comments_df, 
-                        movies_df
-                    )
-                    st.session_state.movies_with_stats = movies_df
-                except Exception as e:
-                    st.error(f"Error calculating sentiment stats: {str(e)}")
-        
-        # Add a simple data quality check
-        valid_for_analysis = (
-            'revenue' in movies_df.columns and 
-            'avg_sentiment' in movies_df.columns and
-            (movies_df['revenue'] > 0).any() and
-            len(movies_df) >= 5  # Need at least 5 movies for meaningful analysis
-        )
-        
-        if not valid_for_analysis:
-            st.error("Insufficient data for box office analysis. Please collect more movie data with box office information.")
-        else:
-            # Data validation metrics
-            total_movies = len(movies_df)
-            movies_with_box_office = (movies_df['revenue'] > 0).sum()
-            movies_with_sentiment = (~movies_df['avg_sentiment'].isna()).sum()
+            # Run the analysis pipeline
+            from src.pipeline import run_integrated_analysis_pipeline
+            pipeline_results = run_integrated_analysis_pipeline(comments_df, movies_df)
             
-            # Show data quality metrics
-            quality_col1, quality_col2, quality_col3 = st.columns(3)
-            with quality_col1:
-                st.metric("Total Movies", total_movies)
-            with quality_col2:
-                st.metric("With Box Office Data", movies_with_box_office)
-            with quality_col3:
-                st.metric("With Sentiment Data", movies_with_sentiment)
-
-            # Filter to only movies with both sentiment stats and box office data
-            has_box_office = movies_df['revenue'].notna() & (movies_df['revenue'] > 0)
-
-            # Check for sentiment columns again after potential additions
-            has_sentiment = all(col in movies_df.columns for col in ['avg_polarity'])
-
-            valid_movies = movies_df[has_box_office]
-            if has_sentiment:
-                valid_movies = valid_movies[valid_movies['avg_polarity'].notna()]
+            # Store updated dataframes in session state
+            st.session_state.comments_df = pipeline_results['comments_df']
+            st.session_state.movies_df = pipeline_results['movies_df']
+            
+            # Store results in session state for reuse
+            st.session_state.pipeline_results = pipeline_results
+        
+        # Layout the dashboard
+        st.subheader("TrailerInsight Dashboard")
+        
+        # Display metrics at the top
+        metrics = pipeline_results['dashboard_metrics']
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Total Movies", metrics["total_movies"])
+        
+        with col2:
+            st.metric("Total Comments", f"{metrics['total_comments']:,}")
+        
+        with col3:
+            st.metric("Positive Comments", f"{metrics['positive_pct']:.1f}%")
+        
+        with col4:
+            correlation_metric = metrics.get("top_correlation_metric", "N/A")
+            correlation_value = metrics.get("top_correlation_value", 0)
+            st.metric("Top Correlation", f"{correlation_value:.2f}", 
+                      help=f"Correlation between {correlation_metric} and revenue")
+        
+        # Create tabs for visualizations and insights
+        tab1, tab2, tab3 = st.tabs(["Sentiment-Revenue Analysis", "Cluster Analysis", "Predictive Insights"])
+        
+        with tab1:
+            st.subheader("Sentiment Impact on Box Office Performance")
+            
+            # Show key insights
+            insights = pipeline_results['correlation_results'].get('insights', [])
+            for insight in insights:
+                st.info(insight)
+            
+            # Show sentiment correlation visualization
+            st.plotly_chart(
+                pipeline_results['visualizations'].get('prediction_model', None),
+                use_container_width=True
+            )
+            
+            # Show genre correlations if available
+            if 'genre_correlation' in pipeline_results['visualizations']:
+                st.subheader("Sentiment-Revenue Correlation by Genre")
+                st.plotly_chart(
+                    pipeline_results['visualizations']['genre_correlation'],
+                    use_container_width=True
+                )
+        
+        with tab2:
+            st.subheader("Audience Reaction Clusters")
+            
+            # Show cluster distribution
+            st.plotly_chart(
+                pipeline_results['visualizations'].get('cluster_bar', None),
+                use_container_width=True
+            )
+            
+            # Show cluster insights
+            st.subheader("Cluster Impact on Box Office")
+            
+            # Get cluster insights
+            cluster_insights = pipeline_results['cluster_correlation_results'].get('insights', [])
+            for insight in cluster_insights:
+                st.info(insight)
+            
+            # Display summaries for each cluster
+            st.subheader("Audience Reaction Themes")
+            
+            formatted_insights = pipeline_results.get('formatted_insights', {})
+            for cluster_id, insight in formatted_insights.items():
+                with st.expander(f"Theme {cluster_id}"):
+                    st.markdown(insight)
+        
+        with tab3:
+            st.subheader("Movie Revenue Prediction")
+            
+            # Create simple prediction form
+            st.markdown("### Predict Box Office Performance")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                positive_pct = st.slider("Positive Comment %", 0, 100, 50)
+                negative_pct = st.slider("Negative Comment %", 0, 100, 20)
                 
-            # Proceed with analysis if we have enough valid data
-            if movies_with_box_office >= 5 and movies_with_sentiment >= 5:
-                # Create tabs for different analyses
-                tab1, tab2, tab3 = st.tabs(["Sentiment vs. Revenue", "Correlation Analysis", "Genre Insights"])
+                # Ensure percentages add up to 100
+                neutral_pct = 100 - positive_pct - negative_pct
+                st.write(f"Neutral Comment %: {neutral_pct}%")
                 
-                with tab1:
-                    st.subheader("Sentiment vs. Box Office Revenue")
+                # Calculate polarity (simplified)
+                polarity = (positive_pct - negative_pct) / 100
+                st.write(f"Calculated Sentiment Polarity: {polarity:.2f}")
+            
+            with col2:
+                # Get top clusters
+                top_clusters = pipeline_results['cluster_correlation_results'].get('sorted_correlations', [])
+                if top_clusters:
+                    # Get the top positive and negative correlated clusters
+                    positive_clusters = [c for c, v in top_clusters if v > 0][:2]
+                    negative_clusters = [c for c, v in top_clusters if v < 0][:2]
                     
-                    if has_sentiment:
-                        # Create scatter plot
-                        try:
-                            fig = px.scatter(
-                                valid_movies, 
-                                x='avg_polarity', 
-                                y='revenue',
-                                text='title',
-                                size='comment_count' if 'comment_count' in valid_movies.columns else None,
-                                color='positive_pct' if 'positive_pct' in valid_movies.columns else None,
-                                hover_data=['positive_pct', 'negative_pct'] if all(col in valid_movies.columns for col in ['positive_pct', 'negative_pct']) else None,
-                                title="Sentiment Polarity vs. Box Office Revenue",
-                                labels={
-                                    'avg_polarity': 'Average Sentiment Polarity',
-                                    'revenue': 'Box Office Revenue ($)',
-                                    'positive_pct': 'Positive Comment %'
-                                },
-                                color_continuous_scale='Viridis'
-                            )
-                            
-                            fig.update_traces(textposition='top center')
-                            st.plotly_chart(fig, use_container_width=True)
-                            
-                            # Add regression line option
-                            if st.checkbox("Show regression line"):
-                                import numpy as np
-                                from scipy import stats
-                                
-                                # Calculate regression line
-                                x = valid_movies['avg_polarity']
-                                y = valid_movies['revenue']
-                                
-                                slope, intercept, r_value, p_value, std_err = stats.linregress(x, y)
-                                
-                                # Add regression line to plot
-                                x_range = np.linspace(x.min(), x.max(), 100)
-                                y_range = slope * x_range + intercept
-                                
-                                fig.add_trace(
-                                    go.Scatter(
-                                        x=x_range,
-                                        y=y_range,
-                                        mode='lines',
-                                        name=f'Regression (R²={r_value**2:.2f})',
-                                        line=dict(color='red', dash='dash')
-                                    )
-                                )
-                                
-                                st.plotly_chart(fig, use_container_width=True)
-                                
-                                # Show regression statistics
-                                st.markdown(f"""
-                                **Regression Statistics:**
-                                - Slope: ${slope:,.2f}
-                                - Intercept: ${intercept:,.2f}
-                                - R-squared: {r_value**2:.4f}
-                                - p-value: {p_value:.4f}
-                                """)
-                        except Exception as e:
-                            st.error(f"Error creating scatter plot: {str(e)}")
-                    else:
-                        # Create basic box office visualization
-                        try:
-                            fig = px.bar(
-                                valid_movies.sort_values('revenue', ascending=False).head(10),
-                                x='title',
-                                y='revenue',
-                                title="Top 10 Movies by Box Office Revenue",
-                                labels={'revenue': 'Box Office Revenue ($)', 'title': 'Movie'}
-                            )
-                            st.plotly_chart(fig, use_container_width=True)
-                            
-                            st.warning("Sentiment data not available for correlation analysis.")
-                        except Exception as e:
-                            st.error(f"Error creating bar chart: {str(e)}")
-                
-                with tab2:
-                    st.subheader("Correlation Analysis")
+                    if positive_clusters:
+                        st.write("### Recommended Comment Themes")
+                        for cluster in positive_clusters:
+                            cluster_id = cluster.replace("Cluster ", "")
+                            if cluster_id.isdigit():
+                                cluster_id = int(cluster_id)
+                                if cluster_id in pipeline_results['clustering_results'].get('cluster_descriptions', {}):
+                                    st.success(f"✓ {pipeline_results['clustering_results']['cluster_descriptions'][cluster_id]}")
                     
-                    if has_sentiment and 'positive_pct' in valid_movies.columns and 'negative_pct' in valid_movies.columns:
-                        try:
-                            # Calculate correlations
-                            corr = valid_movies['avg_polarity'].corr(valid_movies['revenue'])
-                            corr_pos = valid_movies['positive_pct'].corr(valid_movies['revenue'])
-                            corr_neg = valid_movies['negative_pct'].corr(valid_movies['revenue'])
-                            
-                            # Display correlation metrics
-                            col1, col2, col3 = st.columns(3)
-                            
-                            with col1:
-                                st.metric("Avg. Polarity/Revenue", f"{corr:.2f}")
-                            
-                            with col2:
-                                st.metric("Positive %/Revenue", f"{corr_pos:.2f}")
-                            
-                            with col3:
-                                st.metric("Negative %/Revenue", f"{corr_neg:.2f}")
-                            
-                            # Create correlation heatmap
-                            st.subheader("Correlation Matrix")
-                            
-                            # Select columns for correlation
-                            corr_columns = ['revenue', 'avg_polarity', 'positive_pct', 'negative_pct']
-                            if 'neutral_pct' in valid_movies.columns:
-                                corr_columns.append('neutral_pct')
-                            if 'comment_count' in valid_movies.columns:
-                                corr_columns.append('comment_count')
-                                
-                            corr_columns = [col for col in corr_columns if col in valid_movies.columns]
-                            
-                            # Calculate correlation matrix
-                            corr_matrix = valid_movies[corr_columns].corr()
-                            
-                            # Create heatmap using plotly
-                            fig = px.imshow(
-                                corr_matrix,
-                                text_auto='.2f',
-                                color_continuous_scale='RdBu_r',
-                                title="Correlation Matrix",
-                                labels=dict(x="Variables", y="Variables", color="Correlation")
-                            )
-                            st.plotly_chart(fig, use_container_width=True)
-                            
-                            # Interpretation
-                            st.subheader("Interpretation")
-                            
-                            if abs(corr) > 0.3:
-                                if corr > 0:
-                                    st.markdown("There appears to be a **positive correlation** between sentiment polarity and box office revenue, suggesting that movies with more positive trailer reactions tend to perform better at the box office.")
-                                else:
-                                    st.markdown("There appears to be a **negative correlation** between sentiment polarity and box office revenue, which is an interesting finding that could warrant further investigation.")
-                            else:
-                                st.markdown("There does not appear to be a strong linear correlation between sentiment polarity and box office revenue in this dataset. Other factors may be more influential on performance.")
-                        except Exception as e:
-                            st.error(f"Error in correlation analysis: {str(e)}")
-                    else:
-                        st.warning("Sentiment data not available for correlation analysis.")
+                    if negative_clusters:
+                        st.write("### Comment Themes to Avoid")
+                        for cluster in negative_clusters:
+                            cluster_id = cluster.replace("Cluster ", "")
+                            if cluster_id.isdigit():
+                                cluster_id = int(cluster_id)
+                                if cluster_id in pipeline_results['clustering_results'].get('cluster_descriptions', {}):
+                                    st.error(f"✗ {pipeline_results['clustering_results']['cluster_descriptions'][cluster_id]}")
+            
+            # Make a simple prediction based on the model
+            correlation_results = pipeline_results['correlation_results']
+            if 'data' in correlation_results:
+                data = correlation_results['data']
                 
-                with tab3:
-                    st.subheader("Genre Insights")
+                from scipy import stats
+                import numpy as np
+                
+                # Build simple linear regression model
+                x = data['avg_polarity']
+                y = data['revenue']
+                
+                slope, intercept, r_value, p_value, std_err = stats.linregress(x, y)
+                
+                # Predict revenue
+                predicted_revenue = slope * polarity + intercept
+                
+                # Format with appropriate units
+                if predicted_revenue >= 1e9:
+                    formatted_revenue = f"${predicted_revenue/1e9:.2f} billion"
+                else:
+                    formatted_revenue = f"${predicted_revenue/1e6:.2f} million"
+                
+                # Display prediction with confidence interval
+                st.subheader("Predicted Box Office Revenue")
+                st.markdown(f"### {formatted_revenue}")
+                
+                # Calculate confidence interval
+                # This is a simplified approach
+                confidence = 0.9  # 90% confidence interval
+                n = len(x)
+                t_critical = stats.t.ppf((1 + confidence) / 2, n - 2)
+                std_error = std_err * np.sqrt(1 + 1/n + (polarity - np.mean(x))**2 / np.sum((x - np.mean(x))**2))
+                margin_of_error = t_critical * std_error
+                
+                lower_bound = predicted_revenue - margin_of_error
+                upper_bound = predicted_revenue + margin_of_error
+                
+                # Format confidence interval
+                if lower_bound >= 1e9:
+                    lower_formatted = f"${lower_bound/1e9:.2f} billion"
+                else:
+                    lower_formatted = f"${lower_bound/1e6:.2f} million"
                     
-                    # Check if genres column exists
-                    if 'genres' in valid_movies.columns:
-                        try:
-                            # Extract genres (comma-separated to list)
-                            all_genres = []
-                            for genres in valid_movies['genres']:
-                                if pd.notna(genres) and genres:
-                                    all_genres.extend([g.strip() for g in genres.split(',')])
-                            
-                            unique_genres = sorted(set(all_genres))
-                            
-                            if unique_genres:
-                                # Create analysis by genre
-                                st.markdown("#### Sentiment by Genre")
-                                
-                                # Select genre to analyze
-                                selected_genre = st.selectbox("Select Genre", options=unique_genres)
-                                
-                                # Filter movies by genre
-                                genre_movies = valid_movies[valid_movies['genres'].str.contains(selected_genre, na=False, regex=False)]
-                                
-                                if len(genre_movies) > 0:
-                                    # Show genre statistics
-                                    st.markdown(f"**{len(genre_movies)} movies in the {selected_genre} genre**")
-                                    
-                                    if has_sentiment:
-                                        # Create scatter plot for this genre
-                                        fig = px.scatter(
-                                            genre_movies, 
-                                            x='avg_polarity', 
-                                            y='revenue',
-                                            text='title',
-                                            size='comment_count' if 'comment_count' in genre_movies.columns else None,
-                                            hover_data=['positive_pct', 'negative_pct'] if all(col in genre_movies.columns for col in ['positive_pct', 'negative_pct']) else None,
-                                            title=f"Sentiment vs. Box Office for {selected_genre} Movies",
-                                            labels={
-                                                'avg_polarity': 'Average Sentiment Polarity',
-                                                'revenue': 'Box Office Revenue ($)'
-                                            }
-                                        )
-                                        
-                                        fig.update_traces(textposition='top center')
-                                        st.plotly_chart(fig, use_container_width=True)
-                                        
-                                        # Calculate genre-specific correlation
-                                        genre_corr = genre_movies['avg_polarity'].corr(genre_movies['revenue'])
-                                        
-                                        st.markdown(f"Correlation for {selected_genre} movies: **{genre_corr:.2f}**")
-                                        
-                                        # Compare with overall correlation
-                                        overall_corr = valid_movies['avg_polarity'].corr(valid_movies['revenue'])
-                                        if abs(genre_corr - overall_corr) > 0.1:
-                                            if genre_corr > overall_corr:
-                                                st.markdown(f"*Sentiment appears to have a stronger relationship with box office performance for {selected_genre} movies compared to the overall dataset.*")
-                                            else:
-                                                st.markdown(f"*Sentiment appears to have a weaker relationship with box office performance for {selected_genre} movies compared to the overall dataset.*")
-                                    else:
-                                        # Basic revenue comparison by genre
-                                        fig = px.bar(
-                                            genre_movies.sort_values('revenue', ascending=False),
-                                            x='title',
-                                            y='revenue',
-                                            title=f"Box Office Revenue for {selected_genre} Movies",
-                                            labels={'revenue': 'Box Office Revenue ($)', 'title': 'Movie'}
-                                        )
-                                        st.plotly_chart(fig, use_container_width=True)
-                                else:
-                                    st.warning(f"No movies found in the {selected_genre} genre with complete data.")
-                            else:
-                                st.warning("No genre information available in the dataset.")
-                        except Exception as e:
-                            st.error(f"Error in genre analysis: {str(e)}")
-                    else:
-                        st.warning("Genre information not available in the dataset.")
-            else:
-                st.warning("Not enough movies with both box office data and sentiment statistics. Please collect more data.")
+                if upper_bound >= 1e9:
+                    upper_formatted = f"${upper_bound/1e9:.2f} billion"
+                else:
+                    upper_formatted = f"${upper_bound/1e6:.2f} million"
+                
+                st.write(f"90% Confidence Interval: {lower_formatted} to {upper_formatted}")
+                st.write(f"Model R² = {r_value**2:.2f}, p-value = {p_value:.4f}")
+                
+                if r_value**2 < 0.3:
+                    st.warning("This model has limited predictive power. Use with caution.")

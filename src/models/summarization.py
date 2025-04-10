@@ -1,3 +1,4 @@
+# src/models/summarization.py
 import numpy as np
 import pandas as pd
 import networkx as nx
@@ -202,3 +203,116 @@ class TextRankSummarizer:
         except Exception as e:
             print(f"Error in summarize_comments: {e}")
             return {"overall": "Could not generate summary due to an error."}
+            
+def generate_enhanced_summaries(comments_df, clustering_results):
+    """
+    Generate enhanced summaries for each cluster using improved TextRank.
+    
+    Parameters:
+    comments_df (DataFrame): DataFrame with comment data including clusters
+    clustering_results (dict): Results from enhance_clustering function
+    
+    Returns:
+    dict: Dictionary with cluster summaries and keywords
+    """
+    from src.models.summarization import TextRankSummarizer
+    import pandas as pd
+    
+    # Initialize summarizer
+    summarizer = TextRankSummarizer(n_sentences=3)
+    
+    # Get cluster descriptions
+    cluster_descriptions = clustering_results.get("cluster_descriptions", {})
+    
+    # Generate summaries for each cluster
+    cluster_summaries = {}
+    cluster_keywords = {}
+    
+    for cluster_id in range(len(cluster_descriptions)):
+        # Get comments for this cluster
+        cluster_comments = comments_df[comments_df['cluster'] == cluster_id]
+        
+        if len(cluster_comments) < 3:
+            cluster_summaries[cluster_id] = "Insufficient data for summarization"
+            continue
+        
+        # Get clean text for summarization
+        if 'clean_text' in cluster_comments.columns:
+            texts = cluster_comments['clean_text'].tolist()
+        else:
+            texts = cluster_comments['text'].tolist()
+        
+        # Concatenate texts with proper sentence boundaries
+        # This helps TextRank identify sentence boundaries correctly
+        processed_text = ' . '.join([text.strip() for text in texts if text and isinstance(text, str)])
+        
+        # Generate summary
+        summary = summarizer.summarize(processed_text, n_sentences=3)
+        
+        # Extract keywords
+        keywords = summarizer.extract_keywords(processed_text, n_keywords=8)
+        
+        # Store results
+        cluster_summaries[cluster_id] = summary
+        cluster_keywords[cluster_id] = keywords
+    
+    # Add sentiment context to summaries
+    if "sentiment_by_cluster" in clustering_results:
+        sentiment_by_cluster = clustering_results["sentiment_by_cluster"]
+        
+        for cluster_id, summary in cluster_summaries.items():
+            if cluster_id in sentiment_by_cluster.index:
+                # Get sentiment distribution
+                if 'positive' in sentiment_by_cluster.columns:
+                    pos_pct = sentiment_by_cluster.loc[cluster_id, 'positive'] if 'positive' in sentiment_by_cluster.columns else 0
+                    pos_pct = round(pos_pct * 100) if not pd.isna(pos_pct) else 0
+                    
+                    neg_pct = sentiment_by_cluster.loc[cluster_id, 'negative'] if 'negative' in sentiment_by_cluster.columns else 0
+                    neg_pct = round(neg_pct * 100) if not pd.isna(neg_pct) else 0
+                    
+                    # Add sentiment context to summary
+                    sentiment_context = f"This group of comments is {pos_pct}% positive and {neg_pct}% negative. "
+                    cluster_summaries[cluster_id] = sentiment_context + summary
+    
+    return {
+        "cluster_summaries": cluster_summaries,
+        "cluster_keywords": cluster_keywords
+    }
+
+def format_summarization_insights(cluster_summaries, cluster_descriptions, correlation_results):
+    """
+    Format summarization insights for clear presentation in Streamlit.
+    
+    Parameters:
+    cluster_summaries (dict): Dictionary with cluster summaries
+    cluster_descriptions (dict): Dictionary with cluster descriptions
+    correlation_results (dict): Results from analyze_cluster_revenue_correlation
+    
+    Returns:
+    dict: Dictionary with formatted insights
+    """
+    # Get correlations
+    correlations = correlation_results.get("sorted_correlations", [])
+    
+    # Format insights for each cluster
+    formatted_insights = {}
+    
+    for cluster_id, summary in cluster_summaries.items():
+        cluster_id = int(cluster_id) if isinstance(cluster_id, str) and cluster_id.isdigit() else cluster_id
+        
+        # Get cluster description
+        description = cluster_descriptions.get(cluster_id, f"Cluster {cluster_id}")
+        
+        # Get correlation info if available
+        correlation_info = ""
+        for cluster_name, corr in correlations:
+            if f"Cluster {cluster_id}" == cluster_name:
+                direction = "positive" if corr > 0 else "negative"
+                correlation_info = f"\n\nBox Office Impact: This type of comment shows a {direction} correlation ({corr:.2f}) with box office revenue."
+                break
+        
+        # Combine into formatted insight
+        formatted_insight = f"## {description}\n\n{summary}{correlation_info}"
+        formatted_insights[cluster_id] = formatted_insight
+    
+    return formatted_insights
