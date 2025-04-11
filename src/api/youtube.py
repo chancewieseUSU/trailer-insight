@@ -82,7 +82,7 @@ class YouTubeClient:
             print(f"An HTTP error occurred: {e}")
             return None
     
-    def get_video_comments(self, video_id, max_results=100, published_after=None):
+    def get_video_comments(self, video_id, max_results=100, published_after=None, end_date=None):
         """
         Get comments for a YouTube video.
         
@@ -90,6 +90,7 @@ class YouTubeClient:
         video_id (str): YouTube video ID
         max_results (int): Maximum number of comments to retrieve
         published_after (str): ISO format datetime string to filter comments by date
+        end_date (datetime): Only include comments before this date (e.g., movie release date)
         
         Returns:
         list: List of comment data
@@ -123,6 +124,37 @@ class YouTubeClient:
                 # Extract comments
                 for item in response['items']:
                     comment = item['snippet']['topLevelComment']['snippet']
+                    
+                    # Filter by end date if provided
+                    if end_date:
+                        try:
+                            # Convert comment date to datetime object without timezone info
+                            comment_date_str = comment['publishedAt']
+                            # Remove timezone info to make it naive like the release date
+                            if 'Z' in comment_date_str:
+                                comment_date_str = comment_date_str.replace('Z', '')
+                            if '+' in comment_date_str:
+                                comment_date_str = comment_date_str.split('+')[0]
+                            
+                            comment_date = datetime.fromisoformat(comment_date_str)
+                            
+                            # Ensure end_date is also naive
+                            end_date_naive = end_date
+                            if hasattr(end_date, 'tzinfo') and end_date.tzinfo is not None:
+                                # Strip timezone info if present
+                                end_date_naive = datetime(
+                                    end_date.year, end_date.month, end_date.day, 
+                                    end_date.hour, end_date.minute, end_date.second
+                                )
+                                
+                            # Skip comments after the release date
+                            if comment_date > end_date_naive:
+                                continue
+                        except Exception as e:
+                            # If there's an error parsing dates, log it and include the comment anyway
+                            print(f"Error comparing dates: {e}")
+                    
+                    # Add comment to collection
                     comments.append({
                         'comment_id': item['id'],
                         'text': comment['textDisplay'],
@@ -139,6 +171,28 @@ class YouTubeClient:
                 
                 # Update page token for next request
                 params['pageToken'] = next_page_token
+            
+            # Print a summary of the date filtering
+            if end_date and comments:
+                try:
+                    # Convert to naive datetime objects for comparison
+                    comment_dates = []
+                    for c in comments:
+                        date_str = c['published_at']
+                        if 'Z' in date_str:
+                            date_str = date_str.replace('Z', '')
+                        if '+' in date_str:
+                            date_str = date_str.split('+')[0]
+                        comment_dates.append(datetime.fromisoformat(date_str))
+                    
+                    min_date = min(comment_dates)
+                    max_date = max(comment_dates)
+                    
+                    print(f"Filtered comments from {min_date.strftime('%Y-%m-%d')} to {max_date.strftime('%Y-%m-%d')}")
+                    print(f"Movie release date: {end_date.strftime('%Y-%m-%d')}")
+                    print(f"Retrieved {len(comments)} comments before the release date")
+                except Exception as e:
+                    print(f"Error while printing date summary: {e}")
             
             return comments
         

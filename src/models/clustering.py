@@ -36,40 +36,34 @@ class CommentClusterer:
         self.theme_patterns = self._create_theme_patterns()
     
     def _create_theme_patterns(self):
-        """Create patterns for identifying comment themes."""
+        """Create patterns for identifying movie-related comment themes."""
         return {
-            # Excitement & Anticipation
+            # Expectations & Anticipation
             'anticipation': [
                 'cant wait', "can't wait", 'looking forward', 'excited', 'hyped',
                 'excited for', 'hype', 'finally', 'hope', 'please', 'imagine',
-                'gonna be', 'going to be', 'will be', 'should be'
+                'gonna be', 'going to be', 'will be', 'should be', 'want to see'
             ],
             
             # Visual/Effects commentary
             'visuals': [
                 'looks', 'animation', 'effects', 'graphics', 'cgi', 'beautiful',
                 'stunning', 'gorgeous', 'ugly', 'realistic', 'detailed', 'style',
-                'visuals', 'visual', 'design'
+                'visuals', 'visual', 'design', 'cinematography', 'shots', 'camera'
             ],
             
             # Actor & Character focused
             'characters': [
                 'actor', 'actress', 'character', 'protagonist', 'villain', 
                 'cast', 'casting', 'role', 'voice', 'voices', 'performances',
-                'played by', 'star', 'stars', 'starring'
+                'played by', 'star', 'stars', 'starring', 'acting', 'portrayal'
             ],
             
             # Comparing to other media
             'comparison': [
                 'better than', 'worse than', 'reminds me', 'similar to', 'like the',
                 'just like', 'compared to', 'copy', 'ripoff', 'inspired by',
-                'original', 'sequel', 'prequel', 'franchise', 'universe'
-            ],
-            
-            # References & Callbacks
-            'references': [
-                'reference', 'easter egg', 'callback', 'tribute', 'homage',
-                'nod to', 'classic', 'iconic', 'remember', 'throwback'
+                'original', 'sequel', 'prequel', 'franchise', 'universe', 'series'
             ],
             
             # Story & Plot Commentary
@@ -83,19 +77,7 @@ class CommentClusterer:
             'emotion': [
                 'love', 'hate', 'amazing', 'awesome', 'terrible', 'awful',
                 'best', 'worst', 'glad', 'sad', 'laugh', 'cry', 'emotional',
-                'hilarious', 'epic', 'shocking', 'touching', 'boring'
-            ],
-            
-            # Specific Scene/Moment Comments
-            'moments': [
-                r'\d+:\d+', 'scene', 'moment', 'part', 'favorite part',
-                'best part', 'worst part', 'during', 'when', 'this part'
-            ],
-            
-            # Quotation of Lines
-            'quotes': [
-                r'"[^"]+"', r"'[^']+'", 'saying', 'said', 'quote', 'quotes',
-                'line', 'lines', 'dialogue', 'monologue'
+                'hilarious', 'epic', 'shocking', 'touching', 'boring', 'excited'
             ],
             
             # Criticism
@@ -103,14 +85,27 @@ class CommentClusterer:
                 'disappointed', 'disappointing', 'bad', 'terrible', 'awful',
                 'worst', 'waste', 'trash', 'garbage', 'hate', 'stupid',
                 'boring', 'problem', 'issue', 'wrong', 'mistake', 'missed',
-                'ruined', 'ruin', 'destroyed', 'cash grab'
+                'ruined', 'ruin', 'destroyed', 'cash grab', 'flop', 'fail'
             ],
             
-            # Production Discussion
+            # Hype & Marketing
+            'marketing': [
+                'trailer', 'promotion', 'ad', 'advertisement', 'marketing',
+                'poster', 'teaser', 'preview', 'reveal', 'announced', 'release date',
+                'premiere', 'theater', 'theatre', 'tickets', 'box office'
+            ],
+            
+            # Music & Sound
+            'sound': [
+                'music', 'soundtrack', 'score', 'sound', 'song', 'theme',
+                'audio', 'composer', 'track', 'beat', 'tune', 'sound effects'
+            ],
+            
+            # Director & Production
             'production': [
                 'director', 'producer', 'writer', 'studio', 'budget',
-                'production', 'release', 'delayed', 'postponed', 'announced',
-                'trailer', 'teaser', 'behind the scenes', 'making of'
+                'production', 'release', 'delayed', 'postponed', 'filming',
+                'behind the scenes', 'making of', 'crew', 'development'
             ]
         }
     
@@ -210,7 +205,7 @@ class CommentClusterer:
             cluster_theme_indicators = theme_indicators[theme_indicators['cluster'] == cluster_id]
             
             if cluster_theme_indicators.empty:
-                cluster_themes[cluster_id] = "Miscellaneous"
+                cluster_themes[cluster_id] = "Miscellaneous Comments"
                 continue
             
             # Calculate theme prevalence
@@ -227,17 +222,39 @@ class CommentClusterer:
             # Create theme description
             top_theme_names = top_themes.index.tolist()
             if top_theme_names:
-                # Convert to title case and join
-                theme_names = [name.title() for name in top_theme_names]
-                cluster_themes[cluster_id] = " & ".join(theme_names[:2])
+                # Create more descriptive theme names based on the theme
+                theme_descriptions = {
+                    'anticipation': 'Anticipation & Expectations',
+                    'visuals': 'Visual Effects & Cinematography',
+                    'characters': 'Character & Acting Comments',
+                    'comparison': 'Comparisons to Other Media',
+                    'story': 'Story & Plot Discussion',
+                    'emotion': 'Emotional Reactions',
+                    'criticism': 'Critical Comments',
+                    'marketing': 'Marketing & Promotion',
+                    'sound': 'Music & Sound Design',
+                    'production': 'Production & Direction'
+                }
                 
-                # Add specific sentiment if available
-                if 'emotion' in theme_names and 'criticism' in theme_names:
-                    cluster_themes[cluster_id] = "Critical Comments"
-                elif 'emotion' in theme_names and 'emotion' in top_theme_names[:1]:
-                    cluster_themes[cluster_id] = "Emotional Reactions"
+                # Get better descriptions for the top themes
+                formatted_themes = [theme_descriptions.get(name, name.title()) for name in top_theme_names[:2]]
+                
+                # Special case combinations
+                if 'emotion' in top_theme_names and 'criticism' in top_theme_names:
+                    cluster_themes[cluster_id] = "Negative Reactions & Criticism"
+                elif 'emotion' in top_theme_names and 'anticipation' in top_theme_names:
+                    cluster_themes[cluster_id] = "Excited Anticipation"
+                elif 'story' in top_theme_names and 'criticism' in top_theme_names:
+                    cluster_themes[cluster_id] = "Story & Plot Criticism"
+                elif 'visuals' in top_theme_names and 'emotion' in top_theme_names:
+                    if theme_prevalence['emotion'] > 0 and 'criticism' not in top_theme_names[:3]:
+                        cluster_themes[cluster_id] = "Visual Appreciation"
+                    else:
+                        cluster_themes[cluster_id] = "Visual Criticism"
+                else:
+                    cluster_themes[cluster_id] = " & ".join(formatted_themes)
             else:
-                cluster_themes[cluster_id] = "Miscellaneous"
+                cluster_themes[cluster_id] = "Miscellaneous Comments"
         
         return cluster_themes
     

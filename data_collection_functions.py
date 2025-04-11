@@ -8,7 +8,7 @@ from src.models.sentiment import SentimentAnalyzer
 from src.api.youtube import YouTubeClient
 from src.api.movie_db import MovieDBClient
 
-def collect_movie_dataset(min_movies=50, min_comments=100, include_box_office=True, clear_previous_data=False, save_path='data/processed'):
+def collect_movie_dataset(min_movies=50, min_comments=100, include_box_office=True, clear_previous_data=False, save_path='data/processed', progress_callback=None):
     """
     Automatically collects a dataset of movies with trailers and box office data.
     
@@ -18,6 +18,7 @@ def collect_movie_dataset(min_movies=50, min_comments=100, include_box_office=Tr
     include_box_office (bool): Whether to filter for movies with box office data (default: True)
     clear_previous_data (bool): Whether to clear previous data files before saving new data
     save_path (str): Directory to save the collected data
+    progress_callback (function): Optional callback function to report progress
     
     Returns:
     tuple: (comments_df, movies_df) - DataFrames containing the collected data
@@ -107,6 +108,18 @@ def collect_movie_dataset(min_movies=50, min_comments=100, include_box_office=Tr
                 print(f"  - Skipping (no box office data)")
                 continue
             
+            # Get movie release date
+            release_date = None
+            if 'release_date' in movie and movie['release_date']:
+                try:
+                    release_date = datetime.strptime(movie['release_date'], '%Y-%m-%d')
+                    print(f"  - Movie release date: {release_date.strftime('%Y-%m-%d')}")
+                except (ValueError, TypeError) as e:
+                    print(f"  - Could not parse release date: {e}")
+                    release_date = None
+            else:
+                print(f"  - No release date available")
+            
             # Get trailer ID
             trailer_id = movie_db_client.get_movie_trailer(movie['id'])
             if not trailer_id:
@@ -115,7 +128,11 @@ def collect_movie_dataset(min_movies=50, min_comments=100, include_box_office=Tr
             
             # Get trailer comments
             print(f"  - Found trailer (ID: {trailer_id}), fetching comments...")
-            comments = youtube_client.get_video_comments(trailer_id, max_results=300)
+            comments = youtube_client.get_video_comments(
+                trailer_id, 
+                max_results=300,
+                end_date=release_date  # Only get comments before release date
+            )
             
             if not comments:
                 print(f"  - Skipping (no comments available)")
@@ -194,6 +211,10 @@ def collect_movie_dataset(min_movies=50, min_comments=100, include_box_office=Tr
             all_movies.append(movie_data)
             movies_collected += 1
             
+            # Call progress callback if provided
+            if progress_callback and callable(progress_callback):
+                progress_callback(movie_title, movies_collected, min_movies)
+            
             print(f"  ✓ Successfully collected data ({movies_collected}/{min_movies})")
             
             # Save data incrementally to prevent data loss
@@ -225,21 +246,11 @@ def collect_movie_dataset(min_movies=50, min_comments=100, include_box_office=Tr
         comments_df = pd.concat(all_comments, ignore_index=True)
         movies_df = pd.DataFrame(all_movies)
         
-        # Save final dataset (overwrite the partial files)
+        # Save final dataset
         comments_df.to_csv(f"{save_path}/comments_processed.csv", index=False)
         movies_df.to_csv(f"{save_path}/movies.csv", index=False)
         
         print(f"\nData collection complete: {movies_collected} movies with {len(comments_df)} total comments")
-        
-        # Generate some basic statistics
-        movies_with_box_office = sum(1 for m in all_movies if 
-                                   (m.get('revenue', 0) > 0) or 
-                                   (m.get('box_office', 'N/A') != 'N/A'))
-        
-        avg_comments = comments_df.groupby('movie')['comment_id'].count().mean()
-        
-        print(f"Movies with box office data: {movies_with_box_office} ({movies_with_box_office/movies_collected:.1%})")
-        print(f"Average comments per movie: {avg_comments:.1f}")
         
         # Return the dataframes
         return comments_df, movies_df
