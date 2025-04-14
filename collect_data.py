@@ -151,7 +151,10 @@ if submit_button:
                     
                     # Add sentiment analysis
                     analyzer = SentimentAnalyzer(method='textblob')
-                    sentiment_results = analyzer.analyze_sentiment(comments_df['clean_text'])
+                    sentiment_results = analyzer.analyze_sentiment(
+                        comments_df['clean_text'],
+                        movie_names=[movie_title] * len(comments_df)
+                    )
                     comments_df['sentiment'] = sentiment_results['sentiment']
                     comments_df['polarity'] = sentiment_results['polarity']
                     comments_df['subjectivity'] = sentiment_results['subjectivity']
@@ -197,6 +200,16 @@ if submit_button:
                             'director': omdb_details.get('Director'),
                             'actors': omdb_details.get('Actors')
                         })
+                        
+                        # Try to extract box office revenue from OMDB if not available from TMDB
+                        if movie_data.get('revenue', 0) == 0 and omdb_details.get('BoxOffice'):
+                            try:
+                                # Remove currency symbols and commas
+                                box_office_str = omdb_details.get('BoxOffice', '$0').replace('$', '').replace(',', '')
+                                box_office_value = int(box_office_str)
+                                movie_data['revenue'] = box_office_value
+                            except (ValueError, TypeError):
+                                pass
                     
                     # Add to movie collection
                     all_movies.append(movie_data)
@@ -240,8 +253,14 @@ if submit_button:
                 
                 # Save final dataset
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M')
+                
+                # Save with timestamp
                 comments_df.to_csv(f"{save_directory}/comments_processed_{timestamp}.csv", index=False)
                 movies_df.to_csv(f"{save_directory}/movies_{timestamp}.csv", index=False)
+                
+                # Save without timestamp (canonical version for the app)
+                comments_df.to_csv(f"{save_directory}/comments_processed.csv", index=False)
+                movies_df.to_csv(f"{save_directory}/movies.csv", index=False)
                 
                 # Store in session state for display
                 st.session_state.comments_df = comments_df
@@ -253,6 +272,11 @@ if submit_button:
                 
                 # Save stats
                 movies_with_stats.to_csv(f"{save_directory}/movies_with_stats_{timestamp}.csv", index=False)
+                movies_with_stats.to_csv(f"{save_directory}/movies_with_stats.csv", index=False)
+                
+                # Clear any cached box office analysis
+                if 'box_office_analysis' in st.session_state:
+                    del st.session_state.box_office_analysis
                 
                 status_text.text(f"Data collection complete: {movies_collected} movies with {len(comments_df)} total comments")
                 
@@ -281,7 +305,7 @@ if submit_button:
                 
                 # Box office stats
                 box_office_count = sum(1 for m in movies_df['revenue'] if m and m > 0)
-                st.write(f"Movies with TMDB box office data: {box_office_count} ({box_office_count/len(movies_df):.1%})")
+                st.write(f"Movies with box office data: {box_office_count} ({box_office_count/len(movies_df):.1%})")
                 
                 # Genre distribution
                 genres = []
@@ -321,6 +345,54 @@ if submit_button:
                 
                 st.write("Comments DataFrame (first 10 rows)")
                 st.dataframe(comments_df.head(10))
+                
+            # Try to run box office analysis immediately
+            status_text = st.empty()
+            status_text.text("Running box office analysis...")
+            with st.spinner("Analyzing box office data..."):
+                # Run the analysis pipeline to precompute box office insights
+                from src.visualization.sentiment_viz import analyze_sentiment_revenue_correlation
+                from src.visualization.dashboard_viz import create_dashboard_metrics
+                
+                # Filter movies with revenue data
+                valid_movies = movies_df[movies_df['revenue'] > 0].copy()
+                
+                if len(valid_movies) > 0:
+                    # Add sentiment data from comments
+                    for movie_title in valid_movies['title'].unique():
+                        movie_comments = comments_df[comments_df['movie'] == movie_title]
+                        
+                        if len(movie_comments) > 0:
+                            # Calculate metrics
+                            pos_pct = (movie_comments['sentiment'] == 'positive').mean() * 100
+                            neg_pct = (movie_comments['sentiment'] == 'negative').mean() * 100
+                            
+                            # Add to movies dataframe
+                            valid_movies.loc[valid_movies['title'] == movie_title, 'positive_pct'] = pos_pct
+                            valid_movies.loc[valid_movies['title'] == movie_title, 'negative_pct'] = neg_pct
+                            
+                            # Add polarity if available
+                            if 'polarity' in movie_comments.columns:
+                                avg_polarity = movie_comments['polarity'].mean()
+                                valid_movies.loc[valid_movies['title'] == movie_title, 'avg_polarity'] = avg_polarity
+                    
+                    # Calculate correlation
+                    correlation_results = analyze_sentiment_revenue_correlation(valid_movies)
+                    
+                    # Create dashboard metrics
+                    dashboard_metrics = create_dashboard_metrics(valid_movies, comments_df, correlation_results)
+                    
+                    # Store in session state with timestamp to prevent caching issues
+                    import time
+                    timestamp = time.time()
+                    st.session_state.box_office_analysis = {
+                        'correlation_results': correlation_results,
+                        'dashboard_metrics': dashboard_metrics,
+                        'valid_movies': valid_movies,
+                        'timestamp': timestamp  # Add timestamp to force refresh
+                    }
+                    
+                    status_text.text("Box office analysis complete!")
         else:
             st.error("Data collection failed or no movies met the criteria.")
     

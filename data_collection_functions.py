@@ -272,6 +272,14 @@ def process_sentiment_stats(comments_df, movies_df):
     if comments_df is None or movies_df is None:
         return None
     
+    # Ensure there's data with revenue for box office analysis
+    has_revenue = False
+    if 'revenue' in movies_df.columns:
+        has_revenue = (movies_df['revenue'] > 0).any()
+    
+    if not has_revenue:
+        print("Warning: No movies have revenue data, box office insights will be limited")
+    
     # Group comments by movie and calculate sentiment stats
     sentiment_stats = []
     
@@ -291,7 +299,12 @@ def process_sentiment_stats(comments_df, movies_df):
         negative_pct = negative_count / total_comments * 100
         neutral_pct = neutral_count / total_comments * 100
         
-        avg_polarity = movie_comments['polarity'].mean()
+        # Calculate average polarity if available
+        if 'polarity' in movie_comments.columns:
+            avg_polarity = movie_comments['polarity'].mean()
+        else:
+            # Estimate polarity from sentiment categories
+            avg_polarity = (positive_count - negative_count) / total_comments
         
         # Create stats dictionary
         stats = {
@@ -313,6 +326,32 @@ def process_sentiment_stats(comments_df, movies_df):
     
     # Merge with movies_df
     movies_with_stats = pd.merge(movies_df, sentiment_df, on='title', how='left')
+    
+    # Ensure box office data is properly formatted
+    if 'revenue' in movies_with_stats.columns:
+        # Make sure revenue is numeric
+        movies_with_stats['revenue'] = pd.to_numeric(movies_with_stats['revenue'], errors='coerce')
+        
+        # For movies with box_office string from OMDB but no revenue, try to extract revenue
+        if 'box_office' in movies_with_stats.columns:
+            for idx, row in movies_with_stats.iterrows():
+                if (pd.isna(row['revenue']) or row['revenue'] == 0) and isinstance(row.get('box_office'), str):
+                    try:
+                        # Remove currency symbols and commas
+                        box_office_str = row['box_office'].replace('$', '').replace(',', '')
+                        box_office_value = int(box_office_str)
+                        movies_with_stats.loc[idx, 'revenue'] = box_office_value
+                    except (ValueError, TypeError, AttributeError):
+                        pass
+    
+    # Fill NA values for movies without sentiment data
+    for col in ['comment_count', 'positive_count', 'negative_count', 'neutral_count']:
+        if col in movies_with_stats.columns:
+            movies_with_stats[col] = movies_with_stats[col].fillna(0).astype(int)
+    
+    for col in ['positive_pct', 'negative_pct', 'neutral_pct', 'avg_polarity']:
+        if col in movies_with_stats.columns:
+            movies_with_stats[col] = movies_with_stats[col].fillna(0)
     
     return movies_with_stats
 
