@@ -10,7 +10,7 @@ class SentimentAnalyzer:
     
     def __init__(self):
         """Initialize sentiment analyzer using TextBlob with domain-specific adjustments."""
-        # Movie/gaming positive terms that might be misclassified
+        # Movie positive terms that might be misclassified
         self.domain_positive_terms = [
             'villain', 'evil', 'brutal', 'fight', 'battle', 'explosion', 'dark',
             'intense', 'scary', 'kill', 'die', 'death', 'worst enemy', 'legendary',

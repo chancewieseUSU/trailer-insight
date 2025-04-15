@@ -14,7 +14,7 @@ except LookupError:
     nltk.download('stopwords')
 
 class TextCleaner:
-    """Simple class for cleaning and normalizing YouTube comments."""
+    """Class for cleaning and normalizing YouTube comments."""
     
     def __init__(self):
         """Initialize the text cleaner."""

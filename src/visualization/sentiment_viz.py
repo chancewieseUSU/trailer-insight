@@ -1,21 +1,10 @@
 # src/visualization/sentiment_viz.py
 import pandas as pd
-import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 
 def create_sentiment_distribution_pie(df, sentiment_column='sentiment', title="Sentiment Distribution"):
-    """
-    Create a pie chart showing the distribution of sentiment categories.
-    
-    Parameters:
-    df (DataFrame): DataFrame with sentiment data
-    sentiment_column (str): Column containing sentiment categories
-    title (str): Chart title
-    
-    Returns:
-    Plotly figure object
-    """
+    """Create a pie chart showing the distribution of sentiment categories."""
     # Check if data is valid
     if df is None or sentiment_column not in df.columns:
         return go.Figure().update_layout(title="No data available")
@@ -47,16 +36,7 @@ def create_sentiment_distribution_pie(df, sentiment_column='sentiment', title="S
     return fig
 
 def create_sentiment_comparison(sentiment_data, title="Sentiment Comparison"):
-    """
-    Create a grouped bar chart comparing sentiment across movies.
-    
-    Parameters:
-    sentiment_data (DataFrame): DataFrame with sentiment distribution by movie
-    title (str): Chart title
-    
-    Returns:
-    Plotly figure object
-    """
+    """Create a grouped bar chart comparing sentiment across movies."""
     # Check if data is valid
     if sentiment_data is None or sentiment_data.empty:
         return go.Figure().update_layout(title="No data available")
@@ -97,16 +77,7 @@ def create_sentiment_comparison(sentiment_data, title="Sentiment Comparison"):
     return fig
 
 def create_sentiment_heatmap(sentiment_data, title="Sentiment Heatmap"):
-    """
-    Create a heatmap showing sentiment distribution across movies.
-    
-    Parameters:
-    sentiment_data (DataFrame): DataFrame with sentiment percentages by movie
-    title (str): Chart title
-    
-    Returns:
-    Plotly figure object
-    """
+    """Create a heatmap showing sentiment distribution across movies."""
     # Check if data is valid
     if sentiment_data is None or sentiment_data.empty:
         return go.Figure().update_layout(title="No data available")
@@ -139,24 +110,9 @@ def create_sentiment_heatmap(sentiment_data, title="Sentiment Heatmap"):
     return fig
 
 def analyze_sentiment_revenue_correlation(movies_df):
-    """
-    Analyze correlation between sentiment metrics and box office revenue.
-    
-    Parameters:
-    movies_df (DataFrame): DataFrame with movie and sentiment data
-    
-    Returns:
-    dict: Dictionary with correlation results and scatter plot
-    """
+    """Analyze correlation between sentiment metrics and box office revenue."""
     # Check for required columns
     required_cols = ['revenue', 'avg_polarity', 'positive_pct', 'negative_pct']
-    missing_cols = [col for col in required_cols if col not in movies_df.columns]
-    
-    if missing_cols:
-        return {
-            "error": f"Missing required columns: {', '.join(missing_cols)}",
-            "scatter_plot": go.Figure().update_layout(title="Missing data for correlation analysis")
-        }
     
     # Filter out movies with missing revenue data
     valid_movies = movies_df[movies_df['revenue'] > 0].copy()
@@ -170,7 +126,8 @@ def analyze_sentiment_revenue_correlation(movies_df):
     # Calculate correlations
     correlations = {}
     for metric in ['avg_polarity', 'positive_pct', 'negative_pct']:
-        correlations[metric] = valid_movies[metric].corr(valid_movies['revenue'])
+        if metric in valid_movies.columns:
+            correlations[metric] = valid_movies[metric].corr(valid_movies['revenue'])
     
     # Create scatter plot
     from scipy import stats

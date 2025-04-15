@@ -15,8 +15,8 @@ def collect_movie_dataset(min_movies=50, min_comments=100, include_box_office=Tr
     Parameters:
     min_movies (int): Minimum number of movies to collect
     min_comments (int): Minimum number of comments required per trailer
-    include_box_office (bool): Whether to filter for movies with box office data (default: True)
-    clear_previous_data (bool): Whether to clear previous data files before saving new data
+    include_box_office (bool): Whether to filter for movies with box office data
+    clear_previous_data (bool): Whether to clear previous data files before saving
     save_path (str): Directory to save the collected data
     progress_callback (function): Optional callback function to report progress
     

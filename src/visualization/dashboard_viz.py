@@ -1,21 +1,8 @@
 # src/visualization/dashboard_viz.py
-import pandas as pd
-import numpy as np
 import plotly.express as px
-import plotly.graph_objects as go
 
 def create_dashboard_metrics(movies_df, comments_df, correlation_results=None):
-    """
-    Create simple dashboard metrics for the Streamlit app.
-    
-    Parameters:
-    movies_df (DataFrame): DataFrame with movie data
-    comments_df (DataFrame): DataFrame with comment data
-    correlation_results (dict): Results from correlation analysis
-    
-    Returns:
-    dict: Dictionary with dashboard metrics
-    """
+    """Create simple dashboard metrics for the Streamlit app."""
     metrics = {}
     
     # Movie metrics
@@ -40,16 +27,9 @@ def create_dashboard_metrics(movies_df, comments_df, correlation_results=None):
     return metrics
 
 def create_cluster_visualization(comments_df, cluster_descriptions=None):
-    """
-    Create visualization of comment clusters.
+    """Create visualization of comment clusters."""
+    import plotly.graph_objects as go
     
-    Parameters:
-    comments_df (DataFrame): DataFrame with comment data including clusters
-    cluster_descriptions (dict): Dictionary mapping cluster IDs to descriptions
-    
-    Returns:
-    Plotly figure object
-    """
     if "cluster" not in comments_df.columns:
         return go.Figure().update_layout(title="No cluster data available")
     
@@ -79,15 +59,9 @@ def create_cluster_visualization(comments_df, cluster_descriptions=None):
     return fig
 
 def create_box_office_visualization(movies_df):
-    """
-    Create visualization of box office performance.
+    """Create visualization of box office performance."""
+    import plotly.graph_objects as go
     
-    Parameters:
-    movies_df (DataFrame): DataFrame with movie data
-    
-    Returns:
-    Plotly figure object
-    """
     if "revenue" not in movies_df.columns or "title" not in movies_df.columns:
         return go.Figure().update_layout(title="No box office data available")
     

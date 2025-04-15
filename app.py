@@ -1,28 +1,17 @@
 # app.py
+
 import streamlit as st
 import pandas as pd
-import numpy as np
 import plotly.express as px
 import os
-import time
-from datetime import datetime
 
 # Import the necessary modules
-from src.api.youtube import YouTubeClient
-from src.api.movie_db import MovieDBClient
-from src.preprocessing.clean_text import TextCleaner, clean_text_for_sentiment
-from src.models.sentiment import SentimentAnalyzer, get_sentiment_distribution, get_top_comments
+from src.preprocessing.clean_text import clean_text_for_sentiment
+from src.models.sentiment import SentimentAnalyzer, get_top_comments
 from src.models.clustering import cluster_comments, create_cluster_visualization
 from src.models.summarization import summarize_by_sentiment, summarize_by_cluster
-from src.visualization.sentiment_viz import (
-    create_sentiment_distribution_pie,
-    create_sentiment_comparison,
-    create_sentiment_heatmap,
-    analyze_sentiment_revenue_correlation
-)
-from src.pipeline import run_integrated_analysis_pipeline
-
-# Import the data collection functions
+from src.visualization.sentiment_viz import create_sentiment_distribution_pie, analyze_sentiment_revenue_correlation
+from src.visualization.dashboard_viz import create_dashboard_metrics
 from data_collection_functions import collect_movie_dataset, process_sentiment_stats
 
 # Set page configuration
@@ -34,7 +23,6 @@ st.set_page_config(
 
 # Initialize session state for data persistence
 if 'comments_df' not in st.session_state:
-    # Try to load data if it exists
     data_path = os.path.join('data', 'processed', 'comments_processed.csv')
     if os.path.exists(data_path):
         st.session_state.comments_df = pd.read_csv(data_path)
@@ -42,7 +30,6 @@ if 'comments_df' not in st.session_state:
         st.session_state.comments_df = None
 
 if 'movies_df' not in st.session_state:
-    # Try to load data if it exists
     data_path = os.path.join('data', 'processed', 'movies.csv')
     if os.path.exists(data_path):
         st.session_state.movies_df = pd.read_csv(data_path)
@@ -141,15 +128,11 @@ if page == "Data Collection":
             
             # Run collection with progress updates
             with st.spinner("Collecting data..."):
-                # Run collection function
-                clear_previous_data = True  # Always clear previous data
                 comments_df, movies_df = collect_movie_dataset(
                     min_movies=min_movies,
                     min_comments=min_comments,
-                    include_box_office=True,  # Always require box office data
-                    clear_previous_data=clear_previous_data,
                     save_path='data/processed',
-                    progress_callback=progress_callback  # Pass the callback function
+                    progress_callback=progress_callback
                 )
                 
                 # Update progress bar to completion
@@ -166,7 +149,7 @@ if page == "Data Collection":
                     movies_with_stats = process_sentiment_stats(comments_df, movies_df)
                     st.session_state.movies_with_stats = movies_with_stats
                     
-                    # Clear any cached box office analysis to force recalculation
+                    # Clear any cached box office analysis
                     if 'box_office_analysis' in st.session_state:
                         del st.session_state.box_office_analysis
                     
@@ -179,17 +162,12 @@ if page == "Data Collection":
                         comments_df = st.session_state.comments_df
                         movies_df = st.session_state.movies_df
                         
-                        # Run the analysis pipeline
-                        from src.visualization.sentiment_viz import analyze_sentiment_revenue_correlation
-                        from src.visualization.dashboard_viz import create_dashboard_metrics
-                        
                         # Filter movies with revenue data
                         valid_movies = movies_df[movies_df['revenue'] > 0].copy()
                         
                         if len(valid_movies) > 0:
                             # Calculate sentiment metrics per movie
                             movie_sentiment = {}
-                            movie_stats = {}
                             
                             # Process sentiment stats for each movie
                             for movie_title in valid_movies['title'].unique():
@@ -231,7 +209,7 @@ if page == "Data Collection":
                                 valid_movies, comments_df, correlation_results
                             )
                             
-                            # Store all results in session state with a timestamp to prevent caching issues
+                            # Store all results in session state with a timestamp
                             import time
                             timestamp = time.time()
                             st.session_state.box_office_analysis = {
@@ -239,13 +217,13 @@ if page == "Data Collection":
                                 'dashboard_metrics': dashboard_metrics,
                                 'valid_movies': valid_movies,
                                 'movie_sentiment': movie_sentiment,
-                                'timestamp': timestamp  # Add timestamp to force refresh
+                                'timestamp': timestamp
                             }
                     
                     status_text.text("Data collection and analysis complete!")
                     st.success(f"Successfully collected data for {len(movies_df)} movies with {len(comments_df)} total comments!")
                 else:
-                    st.error("Data collection failed or no movies met the criteria. Make sure your API keys are configured correctly.")
+                    st.error("Data collection failed or no movies met the criteria.")
         
         except Exception as e:
             st.error(f"An error occurred during data collection: {str(e)}")
@@ -316,14 +294,14 @@ elif page == "Sentiment Analysis":
             analyzer = SentimentAnalyzer()
             sentiment_results = analyzer.analyze_sentiment(
                 filtered_df['clean_text'], 
-                movie_names=filtered_df['movie']  # Pass movie names for context
+                movie_names=filtered_df['movie']
             )
             filtered_df['sentiment'] = sentiment_results['sentiment']
             filtered_df['polarity'] = sentiment_results['polarity']
             
             st.success("Sentiment analysis completed!")
         
-        # Create tabs for different visualizations - removed Movie Comparison tab
+        # Create tabs for different visualizations
         tab1, tab2 = st.tabs(["Sentiment Analysis", "Top Comments"])
         
         with tab1:
@@ -374,7 +352,6 @@ elif page == "Sentiment Analysis":
                 for i, row in top_positive.iterrows():
                     st.markdown(f"**Comment:** {row['text']}")
                     if 'polarity' in filtered_df.columns:
-                        # Find the correct polarity value
                         original_row = filtered_df[filtered_df['text'] == row['text']]
                         if not original_row.empty:
                             pol_value = original_row['polarity'].values[0]
@@ -387,7 +364,6 @@ elif page == "Sentiment Analysis":
                 for i, row in top_negative.iterrows():
                     st.markdown(f"**Comment:** {row['text']}")
                     if 'polarity' in filtered_df.columns:
-                        # Find the correct polarity value
                         original_row = filtered_df[filtered_df['text'] == row['text']]
                         if not original_row.empty:
                             pol_value = original_row['polarity'].values[0]
@@ -450,7 +426,7 @@ elif page == "Comment Clusters":
             
             # Create bar chart with shortened labels
             fig = px.bar(
-                x=cluster_viz['short_labels'],  # Use short labels 
+                x=cluster_viz['short_labels'],
                 y=cluster_viz['counts'].values,
                 labels={"x": "Theme", "y": "Comment Count"},
                 title="Comment Themes Distribution",
@@ -461,7 +437,7 @@ elif page == "Comment Clusters":
             
             # Update layout
             fig.update_layout(
-                xaxis_tickangle=-30,  # Reduced angle for better readability
+                xaxis_tickangle=-30,
                 showlegend=False,
                 height=500
             )
@@ -469,7 +445,7 @@ elif page == "Comment Clusters":
             # Display the chart
             st.plotly_chart(fig, use_container_width=True)
             
-            # Display theme descriptions - Expanded to show more details
+            # Display theme descriptions
             st.subheader("Theme Descriptions")
             
             for cluster_id, description in cluster_descriptions.items():
@@ -561,12 +537,12 @@ elif page == "Comment Clusters":
                 
                 for cluster_id in sentiment_by_cluster.index:
                     row = sentiment_by_cluster.loc[cluster_id]
-                    if "positive" in row and row["positive"] > 0.6:  # More than 60% positive
+                    if "positive" in row and row["positive"] > 0.6:
                         theme_name = cluster_descriptions.get(cluster_id, f"Cluster {cluster_id}")
                         theme_name = theme_name.split(':')[0] if ':' in theme_name else theme_name
                         positive_themes.append(theme_name)
                     
-                    if "negative" in row and row["negative"] > 0.6:  # More than 60% negative
+                    if "negative" in row and row["negative"] > 0.6:
                         theme_name = cluster_descriptions.get(cluster_id, f"Cluster {cluster_id}")
                         theme_name = theme_name.split(':')[0] if ':' in theme_name else theme_name
                         negative_themes.append(theme_name)
@@ -617,12 +593,10 @@ elif page == "Summaries":
             
             # Ensure clean text column exists
             if 'clean_text' not in movie_comments.columns:
-                from src.preprocessing.clean_text import clean_text_for_sentiment
                 movie_comments['clean_text'] = movie_comments['text'].apply(clean_text_for_sentiment)
             
             # Ensure sentiment column exists
             if 'sentiment' not in movie_comments.columns:
-                from src.models.sentiment import SentimentAnalyzer
                 analyzer = SentimentAnalyzer()
                 sentiment_results = analyzer.analyze_sentiment(movie_comments['clean_text'])
                 movie_comments['sentiment'] = sentiment_results['sentiment']
@@ -645,7 +619,7 @@ elif page == "Summaries":
                         movie_comments, 
                         text_column='clean_text', 
                         sentiment_column='sentiment',
-                        n_sentences=3  # Fixed at 3 sentences
+                        n_sentences=3
                     )
                 
                 # Display sentiment distribution
@@ -677,9 +651,9 @@ elif page == "Summaries":
                         
                     # Select color based on sentiment
                     color = {
-                        'positive': '#d4f1d4',  # light green
-                        'negative': '#ffebee',  # light red
-                        'neutral': '#e3f2fd'    # light blue
+                        'positive': '#d4f1d4',
+                        'negative': '#ffebee',
+                        'neutral': '#e3f2fd'
                     }.get(sentiment, '#f5f5f5')
                     
                     # Create styled container
@@ -720,7 +694,6 @@ elif page == "Summaries":
                 if current_clustering_key not in st.session_state:
                     # Run clustering with current parameters
                     with st.spinner("Clustering comments..."):
-                        from src.models.clustering import cluster_comments
                         df_with_clusters, cluster_descriptions, cluster_terms, sentiment_by_cluster = cluster_comments(
                             movie_comments, text_column='clean_text', n_clusters=n_clusters, include_sentiment=True
                         )
@@ -747,7 +720,7 @@ elif page == "Summaries":
                         text_column='clean_text', 
                         cluster_column='cluster',
                         sentiment_column='sentiment',
-                        n_sentences=3,  # Fixed at 3 sentences
+                        n_sentences=3,
                         cluster_descriptions=cluster_descriptions
                     )
                 
@@ -789,11 +762,22 @@ elif page == "Summaries":
                         </div>
                         """, unsafe_allow_html=True)
                         
-                        # Sample comments
-                        if data['sample_comments']:
+                        # Sample comments - Check if 'sample_comments' exists before trying to access it
+                        # Fix for the KeyError
+                        if 'sample_comments' in data and data['sample_comments']:
                             st.markdown("### Sample Comments")
                             for i, comment in enumerate(data['sample_comments']):
                                 st.markdown(f"**{i+1}.** {comment}")
+                        else:
+                            # Get sample comments from the cluster
+                            sample_comments = df_with_clusters[df_with_clusters['cluster'] == cluster_id]['text'].sample(
+                                min(3, len(df_with_clusters[df_with_clusters['cluster'] == cluster_id]))
+                            ).tolist()
+                            
+                            if sample_comments:
+                                st.markdown("### Sample Comments")
+                                for i, comment in enumerate(sample_comments):
+                                    st.markdown(f"**{i+1}.** {comment}")
         else:
             st.info("Select a movie from the sidebar to generate summaries")
 
@@ -808,52 +792,20 @@ elif page == "Box Office Insights":
         st.warning("No data available. Please collect data in the Data Collection page.")
     else:
         # Create tabs for different views
-        tab1, tab2, tab3 = st.tabs(["Overall Dashboard", "Per-Movie Analysis", "Outlier Analysis"])
+        tab1, tab2 = st.tabs(["Overall Dashboard", "Per-Movie Analysis"])
         
-        # Add sidebar options for analysis
-        st.sidebar.subheader("Box Office Analysis Options")
-        include_outliers = st.sidebar.checkbox("Include Revenue Outliers", value=False, 
-                                            help="Include movies with extreme box office revenue (e.g. blockbusters)")
+        # Get data from session state
+        comments_df = st.session_state.comments_df
+        movies_df = st.session_state.movies_df
         
-        z_score_threshold = st.sidebar.slider("Outlier Filter Strength", 
-                                           min_value=1.5, max_value=3.5, value=2.5, step=0.1,
-                                           help="Z-score threshold for filtering outliers (lower = more aggressive filtering)")
+        # Filter movies with revenue data
+        valid_movies = movies_df[movies_df['revenue'] > 0].copy()
         
-        # Check if we need to run the analysis
-        run_analysis = False
-        if 'box_office_analysis' not in st.session_state:
-            run_analysis = True
-        elif st.button("Refresh Analysis"):
-            # Force refresh if button is clicked
-            run_analysis = True
-            if 'box_office_analysis' in st.session_state:
-                del st.session_state.box_office_analysis
-        
-        # Run the analysis if needed
-        if run_analysis:
-            # Run the analysis pipeline
-            with st.spinner("Analyzing data... This may take a moment."):
-                # Import needed functions
-                from src.processing.outlier_filtering import filter_box_office_outliers
-                from src.visualization.sentiment_viz import analyze_sentiment_revenue_correlation
-                from src.visualization.dashboard_viz import create_dashboard_metrics
-                
-                # Get data from session state
-                comments_df = st.session_state.comments_df
-                movies_df = st.session_state.movies_df
-                
-                # Filter movies with revenue data
-                all_box_office_movies = movies_df[movies_df['revenue'] > 0].copy()
-                
-                # Calculate sentiment metrics per movie
-                movie_sentiment = {}
-                for movie_title in all_box_office_movies['title'].unique():
-                    movie_comments = comments_df[comments_df['movie'] == movie_title]
-                    
-                    if len(movie_comments) == 0:
-                        continue
-                        
-                    # Calculate metrics
+        # Calculate sentiment metrics per movie if not already present
+        if 'positive_pct' not in valid_movies.columns:
+            for movie_title in valid_movies['title'].unique():
+                movie_comments = comments_df[comments_df['movie'] == movie_title]
+                if len(movie_comments) > 0:
                     pos_pct = (movie_comments['sentiment'] == 'positive').mean() * 100
                     neg_pct = (movie_comments['sentiment'] == 'negative').mean() * 100
                     
@@ -862,410 +814,218 @@ elif page == "Box Office Insights":
                     else:
                         avg_polarity = (pos_pct - neg_pct) / 100
                     
-                    # Store metrics
-                    movie_sentiment[movie_title] = {
-                        'positive_pct': pos_pct,
-                        'negative_pct': neg_pct,
-                        'avg_polarity': avg_polarity,
-                        'comment_count': len(movie_comments)
-                    }
-                
-                # Add sentiment data to all_box_office_movies
-                for movie_title, sentiment_data in movie_sentiment.items():
-                    all_box_office_movies.loc[all_box_office_movies['title'] == movie_title, 'positive_pct'] = sentiment_data['positive_pct']
-                    all_box_office_movies.loc[all_box_office_movies['title'] == movie_title, 'negative_pct'] = sentiment_data['negative_pct']
-                    all_box_office_movies.loc[all_box_office_movies['title'] == movie_title, 'avg_polarity'] = sentiment_data['avg_polarity']
-                
-                # Apply outlier filtering
-                normal_range_movies = filter_box_office_outliers(
-                    all_box_office_movies,
-                    revenue_column='revenue',
-                    budget_column='budget',
-                    z_score_threshold=z_score_threshold,
-                    min_movies=10
-                )
-                
-                # Calculate outlier stats
-                total_movies = len(all_box_office_movies)
-                normal_range_count = len(normal_range_movies)
-                outlier_count = total_movies - normal_range_count
-                outlier_pct = (outlier_count / total_movies * 100) if total_movies > 0 else 0
-                
-                # Run correlation analysis on both datasets
-                all_movies_correlation = analyze_sentiment_revenue_correlation(all_box_office_movies)
-                normal_range_correlation = analyze_sentiment_revenue_correlation(normal_range_movies)
-                
-                # Create dashboard metrics using the appropriate dataset
-                if include_outliers:
-                    dashboard_metrics = create_dashboard_metrics(all_box_office_movies, comments_df, all_movies_correlation)
-                    primary_correlation = all_movies_correlation
-                    primary_movies = all_box_office_movies
-                else:
-                    dashboard_metrics = create_dashboard_metrics(normal_range_movies, comments_df, normal_range_correlation)
-                    primary_correlation = normal_range_correlation
-                    primary_movies = normal_range_movies
-                
-                # Store all results in session state with a timestamp
-                import time
-                timestamp = time.time()
-                
-                st.session_state.box_office_analysis = {
-                    'all_box_office_movies': all_box_office_movies,
-                    'normal_range_movies': normal_range_movies,
-                    'all_movies_correlation': all_movies_correlation,
-                    'normal_range_correlation': normal_range_correlation,
-                    'dashboard_metrics': dashboard_metrics,
-                    'movie_sentiment': movie_sentiment,
-                    'outlier_stats': {
-                        'total_box_office_movies': total_movies,
-                        'normal_range_count': normal_range_count,
-                        'outlier_count': outlier_count,
-                        'outlier_pct': outlier_pct,
-                        'z_score_threshold': z_score_threshold
-                    },
-                    'include_outliers': include_outliers,
-                    'primary_correlation': primary_correlation,
-                    'primary_movies': primary_movies,
-                    'timestamp': timestamp
-                }
+                    # Add to movies dataframe
+                    valid_movies.loc[valid_movies['title'] == movie_title, 'positive_pct'] = pos_pct
+                    valid_movies.loc[valid_movies['title'] == movie_title, 'negative_pct'] = neg_pct
+                    valid_movies.loc[valid_movies['title'] == movie_title, 'avg_polarity'] = avg_polarity
         
-        # Retrieve analysis results
-        if 'box_office_analysis' in st.session_state:
-            analysis = st.session_state.box_office_analysis
+        # Calculate correlation
+        correlation_results = analyze_sentiment_revenue_correlation(valid_movies)
+        
+        with tab1:
+            st.subheader("Overall Box Office Insights")
             
-            # Update the active dataset based on current checkbox
-            if include_outliers != analysis.get('include_outliers', False):
-                # Need to switch between datasets
-                if include_outliers:
-                    analysis['primary_correlation'] = analysis['all_movies_correlation']
-                    analysis['primary_movies'] = analysis['all_box_office_movies']
-                else:
-                    analysis['primary_correlation'] = analysis['normal_range_correlation']
-                    analysis['primary_movies'] = analysis['normal_range_movies']
-                
-                # Update the flag
-                analysis['include_outliers'] = include_outliers
+            # Display metrics at the top
+            col1, col2, col3, col4 = st.columns(4)
             
-            # Get active dataset
-            primary_correlation = analysis['primary_correlation']
-            primary_movies = analysis['primary_movies']
-            outlier_stats = analysis.get('outlier_stats', {})
+            with col1:
+                st.metric("Total Movies", len(valid_movies))
             
-            with tab1:
-                st.subheader("Overall Box Office Insights")
+            with col2:
+                st.metric("Total Comments", len(comments_df))
+            
+            with col3:
+                positive_pct = (comments_df['sentiment'] == 'positive').mean() * 100
+                st.metric("Positive Comments", f"{positive_pct:.1f}%")
+            
+            with col4:
+                r_squared = correlation_results.get("r_squared", 0)
+                st.metric("Sentiment-Revenue R²", f"{r_squared:.2f}")
+            
+            # Show correlation visualization
+            if "scatter_plot" in correlation_results:
+                st.plotly_chart(
+                    correlation_results["scatter_plot"],
+                    use_container_width=True
+                )
+            
+            # Display movie revenue ranking
+            valid_movies = valid_movies.sort_values('revenue', ascending=False)
+            
+            st.subheader("Movie Revenue Ranking")
+            
+            # Create revenue bar chart
+            import plotly.express as px
+            
+            # Prepare data (take top 10 movies by revenue)
+            top_movies = valid_movies.head(10).copy()
+            
+            # Format revenue for better display
+            top_movies['revenue_millions'] = top_movies['revenue'] / 1000000
+            
+            # Create bar chart
+            fig = px.bar(
+                top_movies,
+                x='title',
+                y='revenue_millions',
+                color='avg_polarity',
+                color_continuous_scale=px.colors.diverging.RdYlGn,
+                labels={
+                    'title': 'Movie',
+                    'revenue_millions': 'Revenue ($ millions)',
+                    'avg_polarity': 'Comment Sentiment'
+                },
+                title=f"Top 10 Movies by Box Office Revenue (out of {len(valid_movies)} movies)"
+            )
+            
+            # Update layout
+            fig.update_layout(
+                xaxis_tickangle=-45,
+                template="plotly_white"
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Create a table view of all movies
+            st.subheader("All Movies Revenue & Sentiment Data")
+            
+            # Create a DataFrame with selected columns
+            table_data = valid_movies.copy()
+            table_data['revenue_millions'] = table_data['revenue'] / 1000000
+            table_data['revenue_millions'] = table_data['revenue_millions'].round(1)
+            table_data['positive_pct'] = table_data['positive_pct'].round(1)
+            
+            # Select and rename columns
+            display_df = table_data[['title', 'revenue_millions', 'positive_pct']].rename(
+                columns={
+                    'title': 'Movie',
+                    'revenue_millions': 'Revenue ($M)',
+                    'positive_pct': 'Positive Comments (%)'
+                }
+            )
+            
+            st.dataframe(display_df, use_container_width=True)
+        
+        with tab2:
+            st.subheader("Per-Movie Analysis")
+            
+            # Get all movie names from valid movies dataset
+            movie_names = valid_movies['title'].unique()
+            
+            # Select movie for analysis
+            selected_movie = st.selectbox(
+                "Select a movie to analyze",
+                options=movie_names,
+                index=0 if len(movie_names) > 0 else None
+            )
+            
+            if selected_movie:
+                # Get movie data
+                movie_data = valid_movies[valid_movies['title'] == selected_movie].iloc[0]
+                movie_comments = comments_df[comments_df['movie'] == selected_movie]
                 
-                # Show outlier filtering info
-                if not include_outliers and outlier_stats.get('outlier_count', 0) > 0:
-                    st.info(f"Showing analysis with {outlier_stats.get('outlier_count', 0)} outlier movies filtered out ({outlier_stats.get('outlier_pct', 0):.1f}% of movies). Toggle 'Include Revenue Outliers' in the sidebar to view all movies.")
-                elif include_outliers and outlier_stats.get('outlier_count', 0) > 0:
-                    st.info(f"Showing analysis with all movies including {outlier_stats.get('outlier_count', 0)} revenue outliers. Toggle 'Include Revenue Outliers' in the sidebar to filter them.")
-                
-                # Display metrics at the top
-                metrics = analysis['dashboard_metrics']
-                col1, col2, col3, col4 = st.columns(4)
+                # Create columns for movie details
+                col1, col2 = st.columns(2)
                 
                 with col1:
-                    st.metric("Total Movies", len(primary_movies))
+                    st.markdown(f"## {movie_data['title']}")
+                    if 'overview' in movie_data and not pd.isna(movie_data['overview']):
+                        st.markdown(f"**Description:** {movie_data['overview'][:200]}...")
+                    
+                    if 'genres' in movie_data and not pd.isna(movie_data['genres']):
+                        st.markdown(f"**Genres:** {movie_data['genres']}")
+                    
+                    if 'director' in movie_data and not pd.isna(movie_data['director']):
+                        st.markdown(f"**Director:** {movie_data['director']}")
+                    
+                    if 'release_date' in movie_data and not pd.isna(movie_data['release_date']):
+                        st.markdown(f"**Release Date:** {movie_data['release_date']}")
                 
                 with col2:
-                    st.metric("Total Comments", f"{metrics.get('total_comments', 0):,}")
+                    # Display movie poster if available
+                    if 'poster_path' in movie_data and not pd.isna(movie_data['poster_path']):
+                        poster_url = f"https://image.tmdb.org/t/p/w500{movie_data['poster_path']}"
+                        st.image(poster_url, width=200)
+                
+                # Create columns for key metrics
+                st.subheader("Box Office & Sentiment Analysis")
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    # Revenue
+                    revenue_millions = movie_data['revenue'] / 1000000
+                    st.metric("Box Office Revenue", f"${revenue_millions:.1f}M")
+                
+                with col2:
+                    # Budget if available
+                    if 'budget' in movie_data and movie_data['budget'] > 0:
+                        budget_millions = movie_data['budget'] / 1000000
+                        st.metric("Production Budget", f"${budget_millions:.1f}M")
                 
                 with col3:
-                    st.metric("Positive Comments", f"{metrics.get('positive_pct', 0):.1f}%")
-                
-                with col4:
-                    r_squared = primary_correlation.get("r_squared", 0)
-                    st.metric("Sentiment-Revenue R²", f"{r_squared:.2f}")
-                
-                # Show correlation visualization
-                if "scatter_plot" in primary_correlation:
-                    st.plotly_chart(
-                        primary_correlation["scatter_plot"],
-                        use_container_width=True
-                    )
-
-                    # Show ROI plot if available
-                    if "roi_scatter_plot" in primary_correlation:
-                        st.subheader("Sentiment vs. Return on Investment")
-                        st.plotly_chart(
-                            primary_correlation["roi_scatter_plot"],
-                            use_container_width=True
-                        )
-                
-                # Display movie revenue ranking
-                valid_movies = primary_movies.sort_values('revenue', ascending=False)
-                
-                st.subheader("Movie Revenue Ranking")
-                
-                # Create two columns for the movie revenue chart
-                chart_col, table_col = st.columns([3, 2])
-                
-                with chart_col:
-                    # Create revenue bar chart
-                    import plotly.express as px
-                    
-                    # Prepare data (take top 10 movies by revenue)
-                    top_movies = valid_movies.head(10).copy()
-                    
-                    # Format revenue for better display
-                    top_movies['revenue_millions'] = top_movies['revenue'] / 1000000
-                    
-                    # Create bar chart
-                    fig = px.bar(
-                        top_movies,
-                        x='title',
-                        y='revenue_millions',
-                        color='avg_polarity',
-                        color_continuous_scale=px.colors.diverging.RdYlGn,
-                        labels={
-                            'title': 'Movie',
-                            'revenue_millions': 'Revenue ($ millions)',
-                            'avg_polarity': 'Comment Sentiment'
-                        },
-                        title=f"Top 10 Movies by Box Office Revenue (out of {len(valid_movies)} movies)"
-                    )
-                    
-                    # Update layout
-                    fig.update_layout(
-                        xaxis_tickangle=-45,
-                        template="plotly_white"
-                    )
-                    
-                    st.plotly_chart(fig, use_container_width=True)
-                
-                with table_col:
-                    # Create a table view
-                    st.markdown("### Revenue & Sentiment Data")
-                    
-                    # Create a DataFrame with selected columns
-                    table_data = valid_movies.copy()
-                    table_data['revenue_millions'] = table_data['revenue'] / 1000000
-                    table_data['revenue_millions'] = table_data['revenue_millions'].round(1)
-                    table_data['positive_pct'] = table_data['positive_pct'].round(1)
-                    
-                    # Select and rename columns
-                    display_df = table_data[['title', 'revenue_millions', 'positive_pct']].rename(
-                        columns={
-                            'title': 'Movie',
-                            'revenue_millions': 'Revenue ($M)',
-                            'positive_pct': 'Positive Comments (%)'
-                        }
-                    )
-                    
-                    st.dataframe(display_df, use_container_width=True)
-            
-            with tab2:
-                # Per-Movie Analysis tab content (same as before)
-                st.subheader("Per-Movie Analysis")
-                
-                # Get all movie names from the active dataset
-                movie_names = primary_movies['title'].unique()
-                
-                # Select movie for analysis
-                selected_movie = st.selectbox(
-                    "Select a movie to analyze",
-                    options=movie_names,
-                    index=0 if len(movie_names) > 0 else None
-                )
-                
-                if selected_movie:
-                    # Get movie data
-                    movie_data = primary_movies[primary_movies['title'] == selected_movie].iloc[0]
-                    
-                    # Create columns for key metrics
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        # Revenue
-                        revenue_millions = movie_data['revenue'] / 1000000
-                        st.metric("Box Office Revenue", f"${revenue_millions:.1f}M")
-                    
-                    with col2:
-                        # Budget if available
-                        if 'budget' in movie_data and movie_data['budget'] > 0:
-                            budget_millions = movie_data['budget'] / 1000000
-                            st.metric("Production Budget", f"${budget_millions:.1f}M")
-                    
-                    with col3:
-                        # ROI or profit if both revenue and budget are available
-                        if 'budget' in movie_data and movie_data['budget'] > 0 and movie_data['revenue'] > 0:
-                            profit = movie_data['revenue'] - movie_data['budget']
-                            roi = (profit / movie_data['budget']) * 100
-                            
-                            profit_millions = profit / 1000000
-                            
-                            if profit > 0:
-                                st.metric("Profit", f"${profit_millions:.1f}M (+{roi:.1f}%)")
-                            else:
-                                st.metric("Loss", f"${profit_millions:.1f}M ({roi:.1f}%)", delta_color="inverse")
+                    # ROI or profit if both revenue and budget are available
+                    if 'budget' in movie_data and movie_data['budget'] > 0 and movie_data['revenue'] > 0:
+                        profit = movie_data['revenue'] - movie_data['budget']
+                        roi = (profit / movie_data['budget']) * 100
+                        
+                        profit_millions = profit / 1000000
+                        
+                        if profit > 0:
+                            st.metric("Profit", f"${profit_millions:.1f}M")
                         else:
-                            # If budget data isn't available
-                            movie_sent = analysis['movie_sentiment'].get(selected_movie, {})
-                            st.metric("Positive Comments", f"{movie_sent.get('positive_pct', movie_data.get('positive_pct', 0)):.1f}%")
-            
-            with tab3:
-                # New tab for outlier analysis
-                st.subheader("Revenue Outlier Analysis")
-                
-                # Display outlier stats
-                if outlier_stats:
-                    st.markdown(f"""
-                    ### Revenue Distribution Statistics
-                    
-                    - **Total movies with box office data**: {outlier_stats.get('total_box_office_movies', 0)}
-                    - **Movies within normal revenue range**: {outlier_stats.get('normal_range_count', 0)}
-                    - **Outlier movies**: {outlier_stats.get('outlier_count', 0)} ({outlier_stats.get('outlier_pct', 0):.1f}%)
-                    - **Z-score threshold used**: {outlier_stats.get('z_score_threshold', 0)}
-                    """)
-                    
-                    # Get all box office movies
-                    all_movies = analysis['all_box_office_movies'].copy()
-                    normal_range = analysis['normal_range_movies'].copy()
-                    
-                    # Mark outliers in the full dataset
-                    all_movies['is_outlier'] = ~all_movies['title'].isin(normal_range['title'])
-                    
-                    # Create visualization of revenue distribution
-                    import plotly.express as px
-                    import numpy as np
-                    
-                    # Convert to millions for better display
-                    all_movies['revenue_millions'] = all_movies['revenue'] / 1000000
-                    
-                    # Create bar chart of all movies with outliers highlighted
-                    fig = px.bar(
-                        all_movies.sort_values('revenue', ascending=False),
-                        x='title',
-                        y='revenue_millions',
-                        color='is_outlier',
-                        color_discrete_map={True: 'red', False: 'blue'},
-                        labels={
-                            'title': 'Movie',
-                            'revenue_millions': 'Revenue ($ millions)',
-                            'is_outlier': 'Revenue Outlier'
-                        },
-                        title="All Movies by Box Office Revenue (Outliers in Red)"
-                    )
-                    
-                    # Update layout
-                    fig.update_layout(
-                        xaxis_tickangle=-45,
-                        template="plotly_white",
-                        showlegend=True
-                    )
-                    
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                    # Calculate and display statistics
-                    if len(all_movies) > 0 and len(normal_range) > 0:
-                        st.subheader("Revenue Statistics")
-                        
-                        # Calculate statistics
-                        all_mean = all_movies['revenue'].mean()
-                        all_median = all_movies['revenue'].median()
-                        all_std = all_movies['revenue'].std()
-                        
-                        filtered_mean = normal_range['revenue'].mean()
-                        filtered_median = normal_range['revenue'].median()
-                        filtered_std = normal_range['revenue'].std()
-                        
-                        # Display in columns
-                        col1, col2 = st.columns(2)
-                        
-                        with col1:
-                            st.markdown("#### With Outliers")
-                            st.metric("Mean Revenue", f"${all_mean/1000000:.1f}M")
-                            st.metric("Median Revenue", f"${all_median/1000000:.1f}M")
-                            st.metric("Standard Deviation", f"${all_std/1000000:.1f}M")
-                            st.metric("Revenue Range", f"${all_movies['revenue'].min()/1000000:.1f}M - ${all_movies['revenue'].max()/1000000:.1f}M")
-                        
-                        with col2:
-                            st.markdown("#### Without Outliers")
-                            st.metric("Mean Revenue", f"${filtered_mean/1000000:.1f}M")
-                            st.metric("Median Revenue", f"${filtered_median/1000000:.1f}M")
-                            st.metric("Standard Deviation", f"${filtered_std/1000000:.1f}M")
-                            st.metric("Revenue Range", f"${normal_range['revenue'].min()/1000000:.1f}M - ${normal_range['revenue'].max()/1000000:.1f}M")
-                        
-                        # Show list of outlier movies
-                        if outlier_stats.get('outlier_count', 0) > 0:
-                            st.subheader("Outlier Movies")
-                            outlier_movies = all_movies[all_movies['is_outlier']].sort_values('revenue', ascending=False)
-                            
-                            # Create a table with outlier details
-                            outlier_table = outlier_movies[['title', 'revenue_millions', 'avg_polarity', 'positive_pct']].copy()
-                            outlier_table = outlier_table.rename(columns={
-                                'title': 'Movie',
-                                'revenue_millions': 'Revenue ($M)',
-                                'avg_polarity': 'Sentiment Score',
-                                'positive_pct': 'Positive Comments (%)'
-                            })
-                            
-                            st.dataframe(outlier_table.round(2), use_container_width=True)
-                            
-                            # Compare correlation with and without outliers
-                            st.subheader("Impact on Correlation Analysis")
-                            
-                            # Get correlation values
-                            with_outliers_r = all_movies_correlation.get("r_squared", 0)
-                            without_outliers_r = normal_range_correlation.get("r_squared", 0)
-                            
-                            # Calculate the difference
-                            diff = without_outliers_r - with_outliers_r
-                            diff_pct = (diff / with_outliers_r * 100) if with_outliers_r != 0 else float('inf')
-                            
-                            # Display comparison
-                            corr_col1, corr_col2 = st.columns(2)
-                            
-                            with corr_col1:
-                                st.metric("R² with Outliers", f"{with_outliers_r:.3f}")
-                            
-                            with corr_col2:
-                                # Use delta color to show if filtering improved correlation
-                                delta_color = "normal" if diff > 0 else "inverse"
-                                st.metric("R² without Outliers", f"{without_outliers_r:.3f}", 
-                                          delta=f"{diff_pct:+.1f}%", delta_color=delta_color)
-                            
-                            # Add explanation
-                            if diff > 0:
-                                st.success(f"Removing outliers improved the correlation by {diff_pct:.1f}%, suggesting that extreme box office values were distorting the relationship between sentiment and revenue.")
-                            elif diff < 0:
-                                st.error(f"Removing outliers decreased the correlation by {abs(diff_pct):.1f}%, suggesting that outlier movies actually followed the sentiment-revenue pattern more strongly than typical movies.")
-                            else:
-                                st.info("Removing outliers had no significant impact on the correlation strength.")
-                
-                # Insights section with comparison of results
-                st.subheader("Key Insights")
-                
-                # Generate insights based on actual results
-                if "correlations" in primary_correlation:
-                    corr_value = primary_correlation["correlations"].get('avg_polarity', 0)
-                    
-                    if abs(corr_value) < 0.3:
-                        correlation_text = "weak"
-                    elif abs(corr_value) < 0.6:
-                        correlation_text = "moderate"
+                            st.metric("Loss", f"${profit_millions:.1f}M", delta_color="inverse")
                     else:
-                        correlation_text = "strong"
-                    
-                    st.info(f"""
-                    📊 Analysis shows a **{correlation_text} {corr_value:.2f} correlation** between comment sentiment and box office revenue.
-                    
-                    💰 Movies with more positive trailer comments tend to have {'higher' if corr_value > 0 else 'lower'} box office performance.
-                    
-                    📈 The sentiment-revenue relationship explains approximately **{primary_correlation.get("r_squared", 0):.1%} of revenue variation** in this dataset.
-                    """)
-        else:
-            # If no analysis has been run yet
-            st.info("Collecting data and running analysis. Please wait...")
-            # Run the analysis pipeline now
-            from src.pipeline import run_integrated_analysis_pipeline
-            
-            # Get data from session state
-            comments_df = st.session_state.comments_df
-            movies_df = st.session_state.movies_df
-            
-            # Run analysis
-            with st.spinner("Running analysis pipeline..."):
-                results = run_integrated_analysis_pipeline(comments_df, movies_df)
-                st.session_state.box_office_analysis = results
-                st.experimental_rerun()  # Rerun the app to show results
+                        # If budget data isn't available
+                        st.metric("Positive Comments", f"{movie_data.get('positive_pct', 0):.1f}%")
+                
+                # Sentiment analysis section
+                st.subheader("Audience Sentiment Analysis")
+                
+                # Calculate sentiment stats for this movie
+                sentiment_counts = movie_comments['sentiment'].value_counts()
+                total = sentiment_counts.sum()
+                
+                # Create pie chart of sentiment
+                import plotly.express as px
+                
+                fig = px.pie(
+                    names=sentiment_counts.index,
+                    values=sentiment_counts.values,
+                    title=f"Sentiment Distribution for {selected_movie}",
+                    color=sentiment_counts.index,
+                    color_discrete_map={
+                        'positive': '#2ecc71',
+                        'neutral': '#f1c40f',
+                        'negative': '#e74c3c'
+                    }
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Top comments section
+                st.subheader("Representative Comments")
+                
+                # Get top positive and negative comments
+                pos_comments = movie_comments[movie_comments['sentiment'] == 'positive'].nlargest(3, 'polarity')
+                neg_comments = movie_comments[movie_comments['sentiment'] == 'negative'].nsmallest(3, 'polarity')
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown("### Top Positive Comments")
+                    if not pos_comments.empty:
+                        for i, row in pos_comments.iterrows():
+                            st.markdown(f"**Comment:** {row['text']}")
+                            st.markdown(f"*Polarity: {row['polarity']:.2f}*")
+                            st.markdown("---")
+                    else:
+                        st.info("No positive comments found")
+                
+                with col2:
+                    st.markdown("### Top Negative Comments")
+                    if not neg_comments.empty:
+                        for i, row in neg_comments.iterrows():
+                            st.markdown(f"**Comment:** {row['text']}")
+                            st.markdown(f"*Polarity: {row['polarity']:.2f}*")
+                            st.markdown("---")
+                    else:
+                        st.info("No negative comments found")
