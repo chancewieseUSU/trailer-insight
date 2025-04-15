@@ -142,3 +142,67 @@ def filter_box_office_outliers(movies_df, revenue_column='revenue', budget_colum
         normal_range_movies = normal_range_movies.drop('revenue_zscore', axis=1)
     
     return normal_range_movies
+
+def calculate_composite_score(comments_df, movies_df):
+    """
+    Calculate a simple composite score for box office prediction using key metrics.
+    
+    Parameters:
+    comments_df (DataFrame): DataFrame with comment data
+    movies_df (DataFrame): DataFrame with movie data
+    
+    Returns:
+    DataFrame: DataFrame with composite scores and individual metrics
+    """
+    
+    # Create a results dataframe
+    results_df = movies_df[['title', 'revenue']].copy()
+    
+    # Calculate key metrics for each movie
+    for movie_title in results_df['title']:
+        movie_comments = comments_df[comments_df['movie'] == movie_title]
+        
+        if len(movie_comments) == 0:
+            continue
+            
+        # 1. Sentiment metrics
+        if 'sentiment' in movie_comments.columns:
+            pos_ratio = (movie_comments['sentiment'] == 'positive').mean()
+            results_df.loc[results_df['title'] == movie_title, 'positive_ratio'] = pos_ratio
+        
+        # 2. Comment count (engagement)
+        comment_count = len(movie_comments)
+        results_df.loc[results_df['title'] == movie_title, 'comment_count'] = comment_count
+        
+        # 3. Average polarity if available
+        if 'polarity' in movie_comments.columns:
+            avg_polarity = movie_comments['polarity'].mean()
+            results_df.loc[results_df['title'] == movie_title, 'avg_polarity'] = avg_polarity
+    
+    # Fill NaN values with 0
+    results_df = results_df.fillna(0)
+    
+    # Calculate a simple composite score
+    if len(results_df) > 0:
+        # Normalize comment count (log scale works well for count data)
+        max_count = results_df['comment_count'].max()
+        if max_count > 0:
+            results_df['normalized_count'] = results_df['comment_count'] / max_count
+        else:
+            results_df['normalized_count'] = 0
+        
+        # Simple weighted composite score
+        results_df['composite_score'] = (
+            0.5 * results_df['positive_ratio'] + 
+            0.3 * results_df['normalized_count'] +
+            0.2 * results_df['avg_polarity']
+        )
+    
+    # Calculate basic correlations with revenue
+    correlations = {}
+    for column in ['positive_ratio', 'normalized_count', 'avg_polarity', 'composite_score']:
+        if column in results_df.columns:
+            correlation = results_df[column].corr(results_df['revenue'])
+            correlations[column] = correlation
+    
+    return results_df, correlations

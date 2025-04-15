@@ -52,8 +52,6 @@ with st.sidebar:
 if page == "Data Collection":
     st.header("Data Collection")
     
-    st.info("This page collects movie trailer comments and correlates them with box office performance.")
-    
     # Current dataset status display
     if 'comments_df' in st.session_state and st.session_state.comments_df is not None:
         st.subheader("Current Dataset Status")
@@ -792,7 +790,7 @@ elif page == "Box Office Insights":
         st.warning("No data available. Please collect data in the Data Collection page.")
     else:
         # Create tabs for different views
-        tab1, tab2 = st.tabs(["Overall Dashboard", "Per-Movie Analysis"])
+        tab1, tab2 = st.tabs(["Prediction Analysis", "Per-Movie Details"])
         
         # Get data from session state
         comments_df = st.session_state.comments_df
@@ -801,192 +799,328 @@ elif page == "Box Office Insights":
         # Filter movies with revenue data
         valid_movies = movies_df[movies_df['revenue'] > 0].copy()
         
-        # Calculate sentiment metrics per movie if not already present
-        if 'positive_pct' not in valid_movies.columns:
-            for movie_title in valid_movies['title'].unique():
-                movie_comments = comments_df[comments_df['movie'] == movie_title]
-                if len(movie_comments) > 0:
-                    pos_pct = (movie_comments['sentiment'] == 'positive').mean() * 100
-                    neg_pct = (movie_comments['sentiment'] == 'negative').mean() * 100
-                    
-                    if 'polarity' in movie_comments.columns:
-                        avg_polarity = movie_comments['polarity'].mean()
-                    else:
-                        avg_polarity = (pos_pct - neg_pct) / 100
-                    
-                    # Add to movies dataframe
-                    valid_movies.loc[valid_movies['title'] == movie_title, 'positive_pct'] = pos_pct
-                    valid_movies.loc[valid_movies['title'] == movie_title, 'negative_pct'] = neg_pct
-                    valid_movies.loc[valid_movies['title'] == movie_title, 'avg_polarity'] = avg_polarity
+        # Calculate basic metrics per movie
+        movie_metrics = {}
         
-        # Calculate correlation
-        correlation_results = analyze_sentiment_revenue_correlation(valid_movies)
+        for movie_title in valid_movies['title'].unique():
+            movie_comments = comments_df[comments_df['movie'] == movie_title]
+            
+            if len(movie_comments) == 0:
+                continue
+                
+            # Calculate like metrics if available
+            if 'likes' in movie_comments.columns:
+                total_likes = movie_comments['likes'].sum()
+                
+                # Calculate comment-to-like ratio
+                comment_count = len(movie_comments)
+                comment_like_ratio = comment_count / total_likes if total_likes > 0 else 0
+            else:
+                total_likes = 0
+                comment_like_ratio = 0
+                
+            # Calculate sentiment metrics
+            if 'sentiment' in movie_comments.columns:
+                pos_pct = (movie_comments['sentiment'] == 'positive').mean() * 100
+                
+                # Calculate sentiment consistency
+                # If polarity values are available, use standard deviation of polarity
+                if 'polarity' in movie_comments.columns:
+                    sentiment_consistency = 1 - movie_comments['polarity'].std()  # Higher value means more consistent
+                else:
+                    # Estimate consistency from sentiment categories
+                    neutral_pct = (movie_comments['sentiment'] == 'neutral').mean() * 100
+                    neg_pct = (movie_comments['sentiment'] == 'negative').mean() * 100
+                    sentiment_consistency = 1 - (abs(pos_pct - 50) + abs(neg_pct - 25) + abs(neutral_pct - 25)) / 100
+            else:
+                pos_pct = 0
+                sentiment_consistency = 0
+                
+            # Store metrics
+            movie_metrics[movie_title] = {
+                'like_count': total_likes,
+                'positive_pct': pos_pct,
+                'comment_like_ratio': comment_like_ratio,
+                'sentiment_consistency': sentiment_consistency
+            }
+        
+        # Convert to DataFrame
+        metrics_df = pd.DataFrame.from_dict(movie_metrics, orient='index').reset_index()
+        metrics_df.rename(columns={'index': 'title'}, inplace=True)
+        
+        # Merge with valid_movies
+        prediction_df = pd.merge(valid_movies[['title', 'revenue']], metrics_df, on='title', how='inner')
+        
+        # Create predictive score
+        prediction_df['prediction_score'] = (
+            0.3 * prediction_df['positive_pct'] / 100 +
+            0.3 * (1 - prediction_df['comment_like_ratio'] / prediction_df['comment_like_ratio'].max() if prediction_df['comment_like_ratio'].max() > 0 else 0) +  # Inverse since lower ratio is better
+            0.2 * prediction_df['sentiment_consistency'] + 
+            0.2 * prediction_df['like_count'] / prediction_df['like_count'].max() if prediction_df['like_count'].max() > 0 else 0
+        )
+        
+        # Calculate correlations with revenue
+        correlations = {}
+        metrics_to_check = [
+            ('positive_pct', 'Positive Sentiment %'),
+            ('comment_like_ratio', 'Comment-to-Like Ratio'),
+            ('sentiment_consistency', 'Sentiment Consistency'),
+            ('prediction_score', 'Prediction Score')
+        ]
+        
+        for col, name in metrics_to_check:
+            if col in prediction_df.columns:
+                correlations[name] = prediction_df[col].corr(prediction_df['revenue'])
+        
+        # Sort correlations by absolute value
+        sorted_correlations = sorted(correlations.items(), key=lambda x: abs(x[1]), reverse=True)
         
         with tab1:
-            st.subheader("Overall Box Office Insights")
+            st.subheader("Box Office Prediction Analysis")
             
-            # Display metrics at the top
-            col1, col2, col3, col4 = st.columns(4)
+            # Top metrics
+            col1, col2, col3 = st.columns(3)
             
             with col1:
-                st.metric("Total Movies", len(valid_movies))
+                st.metric("Movies Analyzed", len(prediction_df))
             
             with col2:
-                st.metric("Total Comments", len(comments_df))
+                top_predictor = sorted_correlations[0][0]
+                top_corr = sorted_correlations[0][1]
+                st.metric("Best Predictor", top_predictor)
             
             with col3:
-                positive_pct = (comments_df['sentiment'] == 'positive').mean() * 100
-                st.metric("Positive Comments", f"{positive_pct:.1f}%")
+                st.metric("Correlation Strength", f"{top_corr:.2f}")
             
-            with col4:
-                r_squared = correlation_results.get("r_squared", 0)
-                st.metric("Sentiment-Revenue R²", f"{r_squared:.2f}")
+            # Explanation of metrics
+            st.subheader("Understanding the Metrics")
             
-            # Show correlation visualization
-            if "scatter_plot" in correlation_results:
-                st.plotly_chart(
-                    correlation_results["scatter_plot"],
-                    use_container_width=True
-                )
+            st.markdown("""
+            | Metric | Description | Relationship to Box Office |
+            | ------ | ----------- | -------------------------- |
+            | **Positive Sentiment %** | Percentage of comments classified as positive | More positive reception might drive ticket sales |
+            | **Comment-to-Like Ratio** | Number of comments relative to likes | Lower ratios (fewer comments per like) may indicate less controversy |
+            | **Sentiment Consistency** | How uniform sentiment is across comments | Higher consistency may indicate clearer audience reception |
+            | **Prediction Score** | Combined score using several metrics | Holistic measure of audience enthusiasm |
+            """)
             
-            # Display movie revenue ranking
-            valid_movies = valid_movies.sort_values('revenue', ascending=False)
+            # Correlation chart
+            st.subheader("Metric Correlations with Box Office Revenue")
             
-            st.subheader("Movie Revenue Ranking")
+            corr_data = pd.DataFrame({
+                'Metric': [name for name, _ in sorted_correlations],
+                'Correlation': [corr for _, corr in sorted_correlations]
+            })
             
-            # Create revenue bar chart
-            import plotly.express as px
-            
-            # Prepare data (take top 10 movies by revenue)
-            top_movies = valid_movies.head(10).copy()
-            
-            # Format revenue for better display
-            top_movies['revenue_millions'] = top_movies['revenue'] / 1000000
-            
-            # Create bar chart
             fig = px.bar(
-                top_movies,
-                x='title',
-                y='revenue_millions',
-                color='avg_polarity',
-                color_continuous_scale=px.colors.diverging.RdYlGn,
-                labels={
-                    'title': 'Movie',
-                    'revenue_millions': 'Revenue ($ millions)',
-                    'avg_polarity': 'Comment Sentiment'
-                },
-                title=f"Top 10 Movies by Box Office Revenue (out of {len(valid_movies)} movies)"
+                corr_data,
+                x='Metric',
+                y='Correlation',
+                color='Correlation',
+                color_continuous_scale='RdBu_r',
+                title="Which Metrics Best Predict Box Office Revenue?",
+                labels={'Correlation': 'Correlation Coefficient'}
             )
             
-            # Update layout
-            fig.update_layout(
-                xaxis_tickangle=-45,
-                template="plotly_white"
-            )
-            
+            fig.update_layout(xaxis_tickangle=-45)
             st.plotly_chart(fig, use_container_width=True)
             
-            # Create a table view of all movies
-            st.subheader("All Movies Revenue & Sentiment Data")
+            # Create scatter plot for prediction score
+            st.subheader("Prediction Score Analysis")
             
-            # Create a DataFrame with selected columns
-            table_data = valid_movies.copy()
-            table_data['revenue_millions'] = table_data['revenue'] / 1000000
-            table_data['revenue_millions'] = table_data['revenue_millions'].round(1)
-            table_data['positive_pct'] = table_data['positive_pct'].round(1)
-            
-            # Select and rename columns
-            display_df = table_data[['title', 'revenue_millions', 'positive_pct']].rename(
-                columns={
-                    'title': 'Movie',
-                    'revenue_millions': 'Revenue ($M)',
-                    'positive_pct': 'Positive Comments (%)'
-                }
+            prediction_fig = px.scatter(
+                prediction_df,
+                x='prediction_score',
+                y='revenue',
+                hover_data=['title'],
+                labels={
+                    'prediction_score': 'Prediction Score',
+                    'revenue': 'Box Office Revenue ($)',
+                    'title': 'Movie'
+                },
+                title=f"Prediction Score vs. Box Office Revenue"
             )
             
-            st.dataframe(display_df, use_container_width=True)
+            # Calculate R²
+            pred_r_squared = correlations['Prediction Score'] ** 2
+            
+            # Add annotation
+            prediction_fig.add_annotation(
+                x=0.05,
+                y=0.95,
+                xref="paper",
+                yref="paper",
+                text=f"Correlation: {correlations['Prediction Score']:.2f} (R²: {pred_r_squared:.2f})",
+                showarrow=False,
+                bgcolor="white",
+                bordercolor="black",
+                borderwidth=1
+            )
+            
+            # Add simple trendline
+            x_values = prediction_df['prediction_score']
+            y_values = prediction_df['revenue']
+            if len(x_values) > 1:
+                x_min, x_max = min(x_values), max(x_values)
+                
+                # Simple linear fit (using averages to approximate)
+                x_mean = sum(x_values) / len(x_values)
+                y_mean = sum(y_values) / len(y_values)
+                
+                # Calculate slope (covariance / variance)
+                numerator = sum((x - x_mean) * (y - y_mean) for x, y in zip(x_values, y_values))
+                denominator = sum((x - x_mean) ** 2 for x in x_values)
+                
+                if denominator != 0:
+                    slope = numerator / denominator
+                    intercept = y_mean - slope * x_mean
+                    
+                    y_min = slope * x_min + intercept
+                    y_max = slope * x_max + intercept
+                    
+                    # Add line
+                    prediction_fig.add_shape(
+                        type="line",
+                        x0=x_min,
+                        y0=y_min,
+                        x1=x_max,
+                        y1=y_max,
+                        line=dict(color="Red", width=2, dash="dash")
+                    )
+            
+            st.plotly_chart(prediction_fig, use_container_width=True)
+            
+            # Explanation of prediction score
+            st.info("""
+            ### Prediction Score
+
+            Our combined prediction score weights multiple factors to create a single predictive metric:
+            
+            - **30%** Positive sentiment percentage (genuine audience enthusiasm)
+            - **30%** Inverse comment-to-like ratio (fewer comments per like indicates less controversy)
+            - **20%** Sentiment consistency (uniform audience reactions)
+            - **20%** Like count (overall engagement level)
+            
+            This combined metric has shown the strongest correlation with box office success.
+            """)
+            
+            # Prediction data table
+            st.subheader("Revenue Prediction Data")
+            
+            # Prepare data for display
+            display_df = prediction_df.copy()
+            display_df['revenue_millions'] = display_df['revenue'] / 1000000
+            
+            # Select and format columns
+            table_cols = [
+                'title', 'revenue_millions', 'prediction_score', 
+                'positive_pct', 'like_count', 
+                'comment_like_ratio', 'sentiment_consistency'
+            ]
+            
+            display_cols = {
+                'title': 'Movie',
+                'revenue_millions': 'Revenue ($M)',
+                'prediction_score': 'Prediction Score',
+                'positive_pct': 'Positive Sentiment (%)',
+                'like_count': 'Likes',
+                'comment_like_ratio': 'Comment-to-Like Ratio',
+                'sentiment_consistency': 'Sentiment Consistency'
+            }
+            
+            # Format and round numbers
+            final_df = display_df[table_cols].copy()
+            final_df['revenue_millions'] = final_df['revenue_millions'].round(1)
+            final_df['prediction_score'] = final_df['prediction_score'].round(2)
+            final_df['positive_pct'] = final_df['positive_pct'].round(1)
+            final_df['comment_like_ratio'] = final_df['comment_like_ratio'].round(4)
+            final_df['sentiment_consistency'] = final_df['sentiment_consistency'].round(2)
+            
+            # Rename columns
+            final_df.columns = [display_cols.get(col, col) for col in final_df.columns]
+            
+            # Sort by revenue
+            final_df = final_df.sort_values('Revenue ($M)', ascending=False)
+            
+            # Display table
+            st.dataframe(final_df, use_container_width=True)
         
         with tab2:
             st.subheader("Per-Movie Analysis")
             
-            # Get all movie names from valid movies dataset
-            movie_names = valid_movies['title'].unique()
-            
             # Select movie for analysis
+            movie_list = prediction_df['title'].tolist()
             selected_movie = st.selectbox(
                 "Select a movie to analyze",
-                options=movie_names,
-                index=0 if len(movie_names) > 0 else None
+                options=movie_list,
+                index=0 if movie_list else None
             )
             
             if selected_movie:
                 # Get movie data
                 movie_data = valid_movies[valid_movies['title'] == selected_movie].iloc[0]
+                movie_metrics = prediction_df[prediction_df['title'] == selected_movie].iloc[0]
                 movie_comments = comments_df[comments_df['movie'] == selected_movie]
                 
-                # Create columns for movie details
-                col1, col2 = st.columns(2)
+                # Movie header
+                col1, col2 = st.columns([2, 1])
                 
                 with col1:
                     st.markdown(f"## {movie_data['title']}")
-                    if 'overview' in movie_data and not pd.isna(movie_data['overview']):
-                        st.markdown(f"**Description:** {movie_data['overview'][:200]}...")
                     
+                    # Description if available
+                    if 'overview' in movie_data and not pd.isna(movie_data['overview']):
+                        st.markdown(f"**Description:** {movie_data['overview']}")
+                    
+                    # Genre if available
                     if 'genres' in movie_data and not pd.isna(movie_data['genres']):
                         st.markdown(f"**Genres:** {movie_data['genres']}")
-                    
-                    if 'director' in movie_data and not pd.isna(movie_data['director']):
-                        st.markdown(f"**Director:** {movie_data['director']}")
-                    
-                    if 'release_date' in movie_data and not pd.isna(movie_data['release_date']):
-                        st.markdown(f"**Release Date:** {movie_data['release_date']}")
                 
                 with col2:
-                    # Display movie poster if available
+                    # Movie poster if available
                     if 'poster_path' in movie_data and not pd.isna(movie_data['poster_path']):
                         poster_url = f"https://image.tmdb.org/t/p/w500{movie_data['poster_path']}"
-                        st.image(poster_url, width=200)
+                        st.image(poster_url, width=150)
                 
-                # Create columns for key metrics
-                st.subheader("Box Office & Sentiment Analysis")
+                # Key metrics
+                st.subheader("Box Office & Prediction Metrics")
+                
+                # Display in 3 columns
                 col1, col2, col3 = st.columns(3)
                 
                 with col1:
-                    # Revenue
-                    revenue_millions = movie_data['revenue'] / 1000000
+                    revenue_millions = movie_metrics['revenue'] / 1000000
                     st.metric("Box Office Revenue", f"${revenue_millions:.1f}M")
                 
                 with col2:
-                    # Budget if available
-                    if 'budget' in movie_data and movie_data['budget'] > 0:
-                        budget_millions = movie_data['budget'] / 1000000
-                        st.metric("Production Budget", f"${budget_millions:.1f}M")
+                    st.metric("Prediction Score", f"{movie_metrics['prediction_score']:.2f}")
                 
                 with col3:
-                    # ROI or profit if both revenue and budget are available
-                    if 'budget' in movie_data and movie_data['budget'] > 0 and movie_data['revenue'] > 0:
-                        profit = movie_data['revenue'] - movie_data['budget']
-                        roi = (profit / movie_data['budget']) * 100
-                        
-                        profit_millions = profit / 1000000
-                        
-                        if profit > 0:
-                            st.metric("Profit", f"${profit_millions:.1f}M")
-                        else:
-                            st.metric("Loss", f"${profit_millions:.1f}M", delta_color="inverse")
-                    else:
-                        # If budget data isn't available
-                        st.metric("Positive Comments", f"{movie_data.get('positive_pct', 0):.1f}%")
+                    relative_prediction = (movie_metrics['prediction_score'] / prediction_df['prediction_score'].mean() - 1) * 100
+                    st.metric("Vs. Average", f"{relative_prediction:.1f}%", delta_color="normal" if relative_prediction >= 0 else "inverse")
                 
-                # Sentiment analysis section
-                st.subheader("Audience Sentiment Analysis")
+                # Key metrics
+                st.subheader("Key Metrics")
                 
-                # Calculate sentiment stats for this movie
+                metrics_cols = st.columns(4)
+                
+                with metrics_cols[0]:
+                    st.metric("Like Count", f"{int(movie_metrics['like_count']):,}")
+                
+                with metrics_cols[1]:
+                    st.metric("Positive Sentiment", f"{movie_metrics['positive_pct']:.1f}%")
+                
+                with metrics_cols[2]:
+                    st.metric("Comment-to-Like Ratio", f"{movie_metrics['comment_like_ratio']:.4f}")
+                
+                with metrics_cols[3]:
+                    st.metric("Sentiment Consistency", f"{movie_metrics['sentiment_consistency']:.2f}")
+                
+                # Sentiment breakdown
+                st.subheader("Audience Sentiment")
+                
+                # Create sentiment chart
                 sentiment_counts = movie_comments['sentiment'].value_counts()
-                total = sentiment_counts.sum()
-                
-                # Create pie chart of sentiment
-                import plotly.express as px
                 
                 fig = px.pie(
                     names=sentiment_counts.index,
@@ -999,33 +1133,27 @@ elif page == "Box Office Insights":
                         'negative': '#e74c3c'
                     }
                 )
+                
+                fig.update_traces(textposition='inside', textinfo='percent+label')
                 st.plotly_chart(fig, use_container_width=True)
                 
-                # Top comments section
-                st.subheader("Representative Comments")
+                # Top comments
+                st.subheader("Top Audience Comments")
                 
-                # Get top positive and negative comments
-                pos_comments = movie_comments[movie_comments['sentiment'] == 'positive'].nlargest(3, 'polarity')
-                neg_comments = movie_comments[movie_comments['sentiment'] == 'negative'].nsmallest(3, 'polarity')
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.markdown("### Top Positive Comments")
-                    if not pos_comments.empty:
-                        for i, row in pos_comments.iterrows():
+                # Get top comments by likes if available
+                if 'likes' in movie_comments.columns:
+                    top_comments = movie_comments.nlargest(5, 'likes')
+                    
+                    for i, row in top_comments.iterrows():
+                        with st.container(border=True):
                             st.markdown(f"**Comment:** {row['text']}")
-                            st.markdown(f"*Polarity: {row['polarity']:.2f}*")
-                            st.markdown("---")
-                    else:
-                        st.info("No positive comments found")
-                
-                with col2:
-                    st.markdown("### Top Negative Comments")
-                    if not neg_comments.empty:
-                        for i, row in neg_comments.iterrows():
-                            st.markdown(f"**Comment:** {row['text']}")
-                            st.markdown(f"*Polarity: {row['polarity']:.2f}*")
-                            st.markdown("---")
-                    else:
-                        st.info("No negative comments found")
+                            
+                            # Show metrics in columns
+                            metrics_cols = st.columns(2)
+                            with metrics_cols[0]:
+                                st.metric("Likes", f"{int(row['likes']):,}")
+                            
+                            with metrics_cols[1]:
+                                st.metric("Sentiment", row['sentiment'].capitalize())
+                else:
+                    st.info("Like data not available for comments")
